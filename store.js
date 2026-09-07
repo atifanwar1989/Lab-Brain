@@ -71,7 +71,8 @@ function defaultData() {
     onlineAmounts: {},
     patientCounts: {},
     entries: {},    // monthKey (YYYY-MM) -> array of entries
-    handovers: {}   // "date::username" -> handover record
+    handovers: {},  // "date::username" -> handover record
+    demoData: { entries: [], online: [], patients: [], handovers: [] },
   };
 }
 
@@ -83,11 +84,33 @@ async function load() {
 
 async function save(data) {
   await ensureTable();
+  // Automatic safety snapshot before every normal data write. Keep the most
+  // recent 30 snapshots so an accidental change can be rolled back.
+  const current = await pool.query('SELECT value FROM app_state WHERE key=$1', ['main']);
+  if (current.rows[0] && current.rows[0].value) {
+    await pool.query(`CREATE TABLE IF NOT EXISTS app_state_backups (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now(), value JSONB NOT NULL)`);
+    await pool.query('INSERT INTO app_state_backups(value) VALUES($1::jsonb)', [JSON.stringify(current.rows[0].value)]);
+    await pool.query(`DELETE FROM app_state_backups WHERE id NOT IN (SELECT id FROM app_state_backups ORDER BY id DESC LIMIT 30)`);
+  }
   await pool.query(
     `INSERT INTO app_state(key, value, updated_at) VALUES ('main', $1::jsonb, now())
      ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = now()`,
     [JSON.stringify(data)]
   );
+}
+
+async function listBackups() {
+  await ensureTable();
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_state_backups (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now(), value JSONB NOT NULL)`);
+  const { rows } = await pool.query('SELECT id, created_at FROM app_state_backups ORDER BY id DESC LIMIT 30');
+  return rows;
+}
+
+async function getBackup(id) {
+  await ensureTable();
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_state_backups (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now(), value JSONB NOT NULL)`);
+  const { rows } = await pool.query('SELECT id, created_at, value FROM app_state_backups WHERE id=$1', [id]);
+  return rows[0] || null;
 }
 
 async function getSecret() {
@@ -106,4 +129,4 @@ async function getSecret() {
   return check.rows[0].value.secret;
 }
 
-module.exports = { load, save, defaultData, getSecret, pool };
+module.exports = { load, save, defaultData, getSecret, pool, listBackups, getBackup };

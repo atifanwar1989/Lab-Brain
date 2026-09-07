@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
-const { load, save, defaultData, getSecret } = require('./store');
+const { load, save, defaultData, getSecret, listBackups, getBackup, pool } = require('./store');
 
 const PORT = process.env.PORT || 4000;
 
@@ -297,6 +297,90 @@ app.post('/api/handover/reopen', auth, async (req, res) => {
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
+// ---------------- Backup / export / demo data ----------------
+app.get('/api/backup', auth, adminOnly, async (req, res) => {
+  try {
+    const snapshot = JSON.parse(JSON.stringify(DB));
+    res.setHeader('Content-Type','application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="lab-brain-backup-${new Date().toISOString().slice(0,10)}.json"`);
+    res.send(JSON.stringify({ app:'Lab-Brain', exportedAt:new Date().toISOString(), data:snapshot }, null, 2));
+  } catch(e) { res.status(500).json({error:'Could not create backup.'}); }
+});
+app.get('/api/backups', auth, adminOnly, async (req,res) => {
+  try { res.json({backups:await listBackups()}); }
+  catch(e) { console.error(e); res.status(500).json({error:'Could not load backup history.'}); }
+});
+app.post('/api/backups/:id/restore', auth, adminOnly, async (req,res) => {
+  try {
+    if (String(req.params.id).includes('.') || !/^\d+$/.test(String(req.params.id))) return res.status(400).json({error:'Invalid backup.'});
+    const backup=await getBackup(Number(req.params.id));
+    if(!backup) return res.status(404).json({error:'Backup not found.'});
+    const restored=JSON.parse(JSON.stringify(backup.value));
+    if(!restored.users || !restored.categories || !restored.locations) return res.status(400).json({error:'Backup is not a valid Lab-Brain snapshot.'});
+    await persist(restored);
+    DB=restored;
+    res.json({ok:true,restoredBackupId:backup.id,createdAt:backup.created_at});
+  } catch(e) { console.error(e); res.status(500).json({error:'Could not restore this backup.'}); }
+});
+app.post('/api/demo-data/load', auth, adminOnly, async (req,res) => {
+  try {
+    DB.demoData=DB.demoData||{entries:[],online:[],patients:[],handovers:[]};
+    if(DB.demoData.entries.length || DB.demoData.online.length || DB.demoData.patients.length || DB.demoData.handovers.length) return res.status(400).json({error:'Demo data already exists. Remove it first if you want a fresh demo set.'});
+    const main=(DB.locations||[]).find(l=>l.id==='nmdc-main') || DB.locations[0];
+    if(!main) return res.status(400).json({error:'No location found.'});
+    const staff=(DB.users||[]).filter(u=>u.role==='staff');
+    if(!staff.length) return res.status(400).json({error:'Create at least one Staff account first.'});
+    const z=staff.find(u=>u.username.toLowerCase()==='zubair')||staff[0];
+    const sh=staff.find(u=>u.username.toLowerCase()==='shazia')||staff.find(u=>u.username!==z.username)||z;
+    const cats=DB.categories||[];
+    const findCat=(name,type)=>cats.find(c=>c.type===type && c.name.toLowerCase()===name.toLowerCase()) || cats.find(c=>c.type===type && c.name.toLowerCase().includes(name.toLowerCase()));
+    const catByIdLocal=id=>cats.find(c=>c.id===id);
+    const now=new Date(), demoYear=now.getFullYear(), demoMonth=now.getMonth()+1, demoMonthKey=`${demoYear}-${String(demoMonth).padStart(2,'0')}`, demoDays=Math.min(7, now.getDate());
+    const lab=findCat('Laboratory','income'), xray=findCat('Xray','income'), us=findCat('Ultrasound','income');
+    const tea=findCat('Tea & Refreshment','expense'), ot=findCat('Overtime','expense'), trans=findCat('Transportation','expense'), fuel=findCat('Faizan','expense'), maint=findCat('General Maintenance','expense'), share=findCat('Ultrasound Dr Share','expense');
+    const demoEntries=[], demoOnline=[], demoPatients=[], demoHandovers=[];
+    const days=Array.from({length:Math.max(1,demoDays)},(_,i)=>i+1);
+    function date(d){return `${demoMonthKey}-${String(d).padStart(2,'0')}`}
+    function addEntry(d,u,c,amt,note='Demo data'){if(!c)return;const id='demo-'+crypto.randomUUID();const month=demoMonthKey;DB.entries[month]=DB.entries[month]||[];const e={id,date:date(d),username:u.username,locationId:main.id,catId:c.id,amount:Number(amt),note,person:'',createdAt:Date.now()};DB.entries[month].push(e);demoEntries.push({month,id});}
+    days.forEach((d,i)=>{
+      addEntry(d,z,lab,42000+i*2500); addEntry(d,z,xray,9000+i*800); addEntry(d,z,us,6500+i*500); addEntry(d,z,tea,500); if(i%2===0)addEntry(d,z,ot,1200); if(i===3)addEntry(d,z,fuel,2500);
+      addEntry(d,sh,lab,15000+i*700); addEntry(d,sh,xray,4000+i*300); addEntry(d,sh,us,3500+i*250); addEntry(d,sh,tea,400); if(i===2)addEntry(d,sh,share,4500); if(i===5)addEntry(d,sh,trans,1000);
+      const ok1=`${date(d)}::${z.username}`,ok2=`${date(d)}::${sh.username}`;DB.onlineAmounts[ok1]=1000+i*100;demoOnline.push(ok1);DB.onlineAmounts[ok2]=500+i*50;demoOnline.push(ok2);
+      const pk1=`${date(d)}::${z.username}`,pk2=`${date(d)}::${sh.username}`;DB.patientCounts[pk1]=70+i*4;demoPatients.push(pk1);DB.patientCounts[pk2]=42+i*3;demoPatients.push(pk2);
+    });
+    [z,sh].forEach((u,i)=>{const d=demoDays;const dayDate=date(d);const dayEntries=(DB.entries[demoMonthKey]||[]).filter(e=>e.username===u.username&&e.date===dayDate);const income=dayEntries.reduce((a,e)=>a+(catByIdLocal(e.catId||'')?.type==='income'?Number(e.amount):0),0);const exp=dayEntries.reduce((a,e)=>a+(catByIdLocal(e.catId||'')?.type==='expense'?Number(e.amount):0),0);const key=`${dayDate}::${u.username}`;const online=Number(DB.onlineAmounts[key]||0);const expected=income-online-exp;DB.handovers[key]={calculated:expected,counted:expected-(i?500:0), cashShort:i?500:0, excessCash:0, online, income, expense:exp, locationId:main.id, remark:i?'Demo: cash short example':'Demo handover', closedAt:Date.now()};demoHandovers.push(key);});
+    DB.demoData={entries:demoEntries,online:demoOnline,patients:demoPatients,handovers:demoHandovers};
+    await persist();
+    res.json({ok:true,message:`Demo data loaded for ${demoMonthKey}, days 1–${demoDays}.`});
+  } catch(e) { console.error(e); res.status(500).json({error:'Could not load demo data.'}); }
+});
+app.post('/api/demo-data/remove', auth, adminOnly, async (req,res) => {
+  try {
+    const d=DB.demoData||{entries:[],online:[],patients:[],handovers:[]};
+    for(const x of d.entries||[]){if(DB.entries[x.month]) DB.entries[x.month]=DB.entries[x.month].filter(e=>e.id!==x.id);}
+    for(const k of d.online||[]) delete DB.onlineAmounts[k];
+    for(const k of d.patients||[]) delete DB.patientCounts[k];
+    for(const k of d.handovers||[]) delete DB.handovers[k];
+    DB.demoData={entries:[],online:[],patients:[],handovers:[]};
+    await persist(); res.json({ok:true,message:'Demo data removed. Your real records were not targeted.'});
+  } catch(e) { console.error(e); res.status(500).json({error:'Could not remove demo data.'}); }
+});
+app.get('/api/report.csv', auth, adminOnly, async (req,res)=>{
+  try{
+    const from=req.query.from,to=req.query.to,locationId=req.query.locationId&&req.query.locationId!=='all'?req.query.locationId:null,username=req.query.username&&req.query.username!=='all'?req.query.username:null;
+    if(!from||!to)return res.status(400).send('from and to are required');
+    const esc=v=>`"${String(v??'').replace(/"/g,'""')}"`;
+    const lines=[['Date','Staff','Location','Type','Category','Person/Vendor','Amount','Remarks'].map(esc).join(',')];
+    for(const month of Object.keys(DB.entries||{})) for(const e of (DB.entries[month]||[])){
+      if(e.date<from||e.date>to||(username&&e.username!==username)||(locationId&&e.locationId!==locationId))continue;
+      const c=(DB.categories||[]).find(c=>c.id===e.catId);const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);
+      lines.push([e.date,u?.name||e.username,l?.name||e.locationId,c?.type||'',c?.name||e.catId,e.person||'',Number(e.amount||0),e.note||''].map(esc).join(','));
+    }
+    for(const [key,h] of Object.entries(DB.handovers||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username)||(locationId&&h.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=(DB.locations||[]).find(l=>l.id===h.locationId);lines.push([date,u?.name||user,l?.name||h.locationId,'handover','Expected Cash / Short / Excess','',Number(h.calculated||0),`Short=${Number(h.cashShort||0)}; Excess=${Number(h.excessCash||0)}; ${h.remark||''}`].map(esc).join(','));}
+    res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="lab-brain-report-${from}-to-${to}.csv"`);res.send('\ufeff'+lines.join('\n'));
+  }catch(e){console.error(e);res.status(500).send('Could not export report.');}
+});
+
 app.get('/api/management-summary', auth, (req, res) => {
   const from = req.query.from, to = req.query.to;
   if (!from || !to) return res.status(400).json({ error: 'from and to are required' });

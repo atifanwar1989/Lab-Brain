@@ -1,36 +1,20 @@
 # Lab-Brain
 
-A simple multi-location daily cash-management web app for diagnostic labs.
+Daily cash management and management reporting app for NMDC.
 
-## Locations included
-- NMDC – Main Branch
-- NMDC – Ayesha Manzil
-- NMDC – AL-Khair
-- NMDC – Orangi Town
-- Prime Lab
+## Data safety
+- Records are stored in Supabase Postgres, not Render's local filesystem.
+- Before every normal data save, Lab-Brain keeps an automatic snapshot of the previous main data state (up to 30 snapshots).
+- Admin can download a complete JSON backup from Reports → Data Safety & Demo.
+- Admin can view automatic backup history and restore a previous snapshot. The current state is snapshotted before restore.
+- Demo data is explicitly tracked and can be removed without targeting real records.
 
-## Business rules
-- Staff accounts are assigned to one location.
-- Admin/Owner accounts can review all locations.
-- Categories are location-specific.
-- Income categories are added to Total Revenue.
-- Online amount is entered once per staff/day and is already included in Total Revenue.
-- Expected Cash = Total Revenue - Online - Expenses.
-- Cash Short and Excess Cash are separate handover fields. They cannot both be entered at the same time.
-- Actual cash is calculated as Expected Cash - Cash Short + Excess Cash.
-- Staff can correct their own entries/online amount on the current date, even after closing the day.
-- Staff cannot correct previous dates; previous-date corrections require Admin.
-- Cash Short/Excess and remarks are saved with the handover and appear in management reports.
-- Existing database records are preserved during normal app updates/migrations.
+## Reports
+- Revenue, Cash Counter Expenses, Patient Count cards.
+- Daily analysis and completed-month trends.
+- Excel-compatible CSV export for the selected report filters.
+- PDF / Print uses the browser print dialog; choose "Save as PDF".
 
-## Storage
-Records are stored in Supabase/Postgres through the `app_state` table, so they survive Render restarts and redeploys.
-
-## Default login on a brand-new database
-Username: `admin`
-Password: `admin123`
-
-Change the password immediately after first login.
-
-## Deploy
-Set `DATABASE_URL` in Render (or another Node hosting provider), then deploy this project. The app listens on the hosting provider's `PORT`.
+## Demo data
+Admin → Reports → Data Safety & Demo → Load Demo Data.
+The demo set uses the current month, days 1–7 when available, and is separately tracked. Use Remove Demo Data to remove only that set.
