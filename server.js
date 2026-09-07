@@ -335,35 +335,69 @@ app.post('/api/demo-data/load', auth, adminOnly, async (req,res) => {
     const cats=DB.categories||[];
     const findCat=(name,type)=>cats.find(c=>c.type===type && c.name.toLowerCase()===name.toLowerCase()) || cats.find(c=>c.type===type && c.name.toLowerCase().includes(name.toLowerCase()));
     const catByIdLocal=id=>cats.find(c=>c.id===id);
-    const now=new Date(), demoYear=now.getFullYear(), demoMonth=now.getMonth()+1, demoMonthKey=`${demoYear}-${String(demoMonth).padStart(2,'0')}`, demoDays=Math.min(7, now.getDate());
+    const now=new Date();
+    const currentYear=now.getFullYear(), currentMonth=now.getMonth()+1, currentMonthKey=`${currentYear}-${String(currentMonth).padStart(2,'0')}`;
+    const demoEntries=[], demoOnline=[], demoPatients=[], demoHandovers=[];
     const lab=findCat('Laboratory','income'), xray=findCat('Xray','income'), us=findCat('Ultrasound','income');
     const tea=findCat('Tea & Refreshment','expense'), ot=findCat('Overtime','expense'), trans=findCat('Transportation','expense'), fuel=findCat('Faizan','expense'), maint=findCat('General Maintenance','expense'), share=findCat('Ultrasound Dr Share','expense');
-    const demoEntries=[], demoOnline=[], demoPatients=[], demoHandovers=[];
-    const days=Array.from({length:Math.max(1,demoDays)},(_,i)=>i+1);
-    function date(d){return `${demoMonthKey}-${String(d).padStart(2,'0')}`}
-    function addEntry(d,u,c,amt,note='Demo data'){if(!c)return;const id='demo-'+crypto.randomUUID();const month=demoMonthKey;DB.entries[month]=DB.entries[month]||[];const e={id,date:date(d),username:u.username,locationId:main.id,catId:c.id,amount:Number(amt),note,person:'',createdAt:Date.now()};DB.entries[month].push(e);demoEntries.push({month,id});}
-    days.forEach((d,i)=>{
-      addEntry(d,z,lab,42000+i*2500); addEntry(d,z,xray,9000+i*800); addEntry(d,z,us,6500+i*500); addEntry(d,z,tea,500); if(i%2===0)addEntry(d,z,ot,1200); if(i===3)addEntry(d,z,fuel,2500);
-      addEntry(d,sh,lab,15000+i*700); addEntry(d,sh,xray,4000+i*300); addEntry(d,sh,us,3500+i*250); addEntry(d,sh,tea,400); if(i===2)addEntry(d,sh,share,4500); if(i===5)addEntry(d,sh,trans,1000);
-      const ok1=`${date(d)}::${z.username}`,ok2=`${date(d)}::${sh.username}`;DB.onlineAmounts[ok1]=1000+i*100;demoOnline.push(ok1);DB.onlineAmounts[ok2]=500+i*50;demoOnline.push(ok2);
-      const pk1=`${date(d)}::${z.username}`,pk2=`${date(d)}::${sh.username}`;DB.patientCounts[pk1]=70+i*4;demoPatients.push(pk1);DB.patientCounts[pk2]=42+i*3;demoPatients.push(pk2);
-    });
-    [z,sh].forEach((u,i)=>{const d=demoDays;const dayDate=date(d);const dayEntries=(DB.entries[demoMonthKey]||[]).filter(e=>e.username===u.username&&e.date===dayDate);const income=dayEntries.reduce((a,e)=>a+(catByIdLocal(e.catId||'')?.type==='income'?Number(e.amount):0),0);const exp=dayEntries.reduce((a,e)=>a+(catByIdLocal(e.catId||'')?.type==='expense'?Number(e.amount):0),0);const key=`${dayDate}::${u.username}`;const online=Number(DB.onlineAmounts[key]||0);const expected=income-online-exp;DB.handovers[key]={calculated:expected,counted:expected-(i?500:0), cashShort:i?500:0, excessCash:0, online, income, expense:exp, locationId:main.id, remark:i?'Demo: cash short example':'Demo handover', closedAt:Date.now()};demoHandovers.push(key);});
+    function monthKey(year,month){return `${year}-${String(month).padStart(2,'0')}`}
+    function daysInMonth(year,month){return new Date(year,month,0).getDate()}
+    function addEntry(year,month,d,u,c,amt,note='Demo data'){
+      if(!c)return;
+      const id='demo-'+crypto.randomUUID(), mk=monthKey(year,month), ds=`${mk}-${String(d).padStart(2,'0')}`;
+      DB.entries[mk]=DB.entries[mk]||[];
+      DB.entries[mk].push({id,date:ds,username:u.username,locationId:main.id,catId:c.id,amount:Number(amt),note,person:'',createdAt:Date.now()});
+      demoEntries.push({month:mk,id});
+    }
+    function addDayData(year,month,d,i,u,multiplier,withHandover=false){
+      const mk=monthKey(year,month), ds=`${mk}-${String(d).padStart(2,'0')}`;
+      addEntry(year,month,d,u,lab,Math.round((38000 + (i%10)*2200 + d*180)*multiplier));
+      addEntry(year,month,d,u,xray,Math.round((7500 + (i%7)*650 + d*70)*multiplier));
+      addEntry(year,month,d,u,us,Math.round((5200 + (i%6)*500 + d*55)*multiplier));
+      addEntry(year,month,d,u,tea,Math.round((350 + (i%4)*80)*multiplier));
+      if(i%3===0) addEntry(year,month,d,u,ot,Math.round(900*multiplier));
+      if(i%11===0) addEntry(year,month,d,u,trans,Math.round(1000*multiplier));
+      if(i%13===0) addEntry(year,month,d,u,fuel,Math.round(1800*multiplier));
+      if(i%17===0) addEntry(year,month,d,u,maint,Math.round(1200*multiplier));
+      if(i%19===0) addEntry(year,month,d,u,share,Math.round(3500*multiplier));
+      const online=Math.round((900 + (i%8)*125)*multiplier);
+      const pkey=`${ds}::${u.username}`;
+      DB.onlineAmounts[pkey]=online; demoOnline.push(pkey);
+      DB.patientCounts[pkey]=Math.round((38 + (i%9)*5 + d%4)*multiplier); demoPatients.push(pkey);
+      if(withHandover){
+        const entries=(DB.entries[mk]||[]).filter(e=>e.username===u.username&&e.date===ds);
+        const income=entries.reduce((a,e)=>a+(catByIdLocal(e.catId||'')?.type==='income'?Number(e.amount):0),0);
+        const exp=entries.reduce((a,e)=>a+(catByIdLocal(e.catId||'')?.type==='expense'?Number(e.amount):0),0);
+        const expected=income-online-exp;
+        const short=(i%5===0 && u.username===sh.username)?500:0;
+        const key=pkey;
+        DB.handovers[key]={calculated:expected,counted:expected-short,cashShort:short,excessCash:0,online,income,expense:exp,locationId:main.id,remark:short?'Demo: cash short example':'Demo handover',closedAt:Date.now()};
+        demoHandovers.push(key);
+      }
+    }
+    // Current incomplete month: populate only days that have elapsed (1–today).
+    for(let d=1; d<=Math.max(1,currentMonth===now.getMonth()+1 ? now.getDate() : 1); d++){
+      addDayData(currentYear,currentMonth,d,d-1,z,1.00,true);
+      addDayData(currentYear,currentMonth,d,d-1,sh,0.52,true);
+    }
+    // Last 6 completed months: full calendar months, so the 3/6-month trend controls
+    // have real data to display while the current incomplete month stays excluded.
+    for(let offset=1; offset<=6; offset++){
+      const dt=new Date(currentYear,currentMonth-1-offset,1);
+      const y=dt.getFullYear(), m=dt.getMonth()+1, total=daysInMonth(y,m);
+      const monthFactor=1 + (6-offset)*0.035;
+      for(let d=1; d<=total; d++){
+        const i=d-1;
+        addDayData(y,m,d,i,z,monthFactor,false);
+        addDayData(y,m,d,i,sh,monthFactor*0.52,false);
+      }
+    }
     DB.demoData={entries:demoEntries,online:demoOnline,patients:demoPatients,handovers:demoHandovers};
     await persist();
-    res.json({ok:true,message:`Demo data loaded for ${demoMonthKey}, days 1–${demoDays}.`});
+    const completed=[];
+    for(let offset=1; offset<=6; offset++){const dt=new Date(currentYear,currentMonth-1-offset,1);completed.push(monthKey(dt.getFullYear(),dt.getMonth()+1));}
+    res.json({ok:true,message:`Demo data loaded: ${currentMonthKey} days 1–${Math.max(1,now.getDate())} plus 6 completed months (${completed[completed.length-1]} to ${completed[0]}).`});
   } catch(e) { console.error(e); res.status(500).json({error:'Could not load demo data.'}); }
-});
-app.post('/api/demo-data/remove', auth, adminOnly, async (req,res) => {
-  try {
-    const d=DB.demoData||{entries:[],online:[],patients:[],handovers:[]};
-    for(const x of d.entries||[]){if(DB.entries[x.month]) DB.entries[x.month]=DB.entries[x.month].filter(e=>e.id!==x.id);}
-    for(const k of d.online||[]) delete DB.onlineAmounts[k];
-    for(const k of d.patients||[]) delete DB.patientCounts[k];
-    for(const k of d.handovers||[]) delete DB.handovers[k];
-    DB.demoData={entries:[],online:[],patients:[],handovers:[]};
-    await persist(); res.json({ok:true,message:'Demo data removed. Your real records were not targeted.'});
-  } catch(e) { console.error(e); res.status(500).json({error:'Could not remove demo data.'}); }
 });
 app.get('/api/report.csv', auth, adminOnly, async (req,res)=>{
   try{
