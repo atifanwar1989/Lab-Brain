@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 4000;
 let DB = null;
 let SECRET = null;
 
-async function persist() { await save(DB); }
+async function persist(data = DB) { await save(data); }
 
 const app = express();
 app.use(express.json());
@@ -72,9 +72,17 @@ app.post('/api/change-password', auth, async (req, res) => {
   if (!newPassword || newPassword.length < 4) {
     return res.status(400).json({ error: 'New password must be at least 4 characters' });
   }
-  user.passwordHash = bcrypt.hashSync(newPassword, 10);
-  try { await persist(); res.json({ ok: true }); }
-  catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
+  const nextDB = JSON.parse(JSON.stringify(DB));
+  const nextUser = nextDB.users.find(u => u.id === req.user.id);
+  nextUser.passwordHash = bcrypt.hashSync(newPassword, 10);
+  try {
+    await persist(nextDB);
+    DB = nextDB;
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Password save failed:', e);
+    res.status(500).json({ error: 'Could not save password. Please try again.' });
+  }
 });
 
 // ---------------- Config: locations / categories / people ----------------
@@ -138,7 +146,21 @@ app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
     if (!(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: 'Invalid location.' });
     u.locationId = locationId;
   }
-  if (password) u.passwordHash = bcrypt.hashSync(password, 10);
+  if (password) {
+    // Save the password change against a copy first. This prevents the UI from
+    // appearing successful while the database write is still pending/fails.
+    const nextDB = JSON.parse(JSON.stringify(DB));
+    const nextUser = nextDB.users.find(x => x.id === u.id);
+    nextUser.passwordHash = bcrypt.hashSync(password, 10);
+    try {
+      await persist(nextDB);
+      DB = nextDB;
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error('Admin password reset failed:', e);
+      return res.status(500).json({ error: 'Could not save password. Please try again.' });
+    }
+  }
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
@@ -219,30 +241,19 @@ app.get('/api/patients', auth, (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
   const username = req.user.role === 'admin' && req.query.username ? req.query.username : req.user.username;
-  if (req.user.role === 'admin' && username === 'all') {
-    const locationId = req.query.locationId && req.query.locationId !== 'all' ? req.query.locationId : null;
-    let count = 0;
-    for (const [key, value] of Object.entries(DB.patientCounts || {})) {
-      const [d, user] = key.split('::');
-      if (d !== date) continue;
-      const u = DB.users.find(x => x.username === user);
-      if (locationId && (!u || u.locationId !== locationId)) continue;
-      count += Number(value || 0);
-    }
-    return res.json({ count });
-  }
-  res.json({ count: Number((DB.patientCounts || {})[date+'::'+username] || 0) });
+  const key = date + '::' + username;
+  res.json({ count: Number((DB.patientCounts || {})[key] || 0) });
 });
 app.put('/api/patients', auth, async (req, res) => {
   const { date, count } = req.body || {};
   if (!date || count == null || Number(count) < 0 || !Number.isFinite(Number(count))) return res.status(400).json({ error: 'date and a valid patient count are required' });
   if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin.' });
   DB.patientCounts = DB.patientCounts || {};
-  DB.patientCounts[date+'::'+req.user.username] = Math.round(Number(count));
-  try { await persist(); res.json({ ok: true, count: Math.round(Number(count)) }); }
+  const username = req.user.role === 'admin' && req.body.username ? req.body.username : req.user.username;
+  DB.patientCounts[date + '::' + username] = Math.round(Number(count));
+  try { await persist(); res.json({ ok:true, count:Math.round(Number(count)) }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
-
 app.get('/api/entries-months', auth, (req, res) => {
   const year = req.query.year;
   const months = Object.keys(DB.entries).filter(m => m.startsWith(year + '-')).sort();
