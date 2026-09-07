@@ -215,6 +215,34 @@ app.put('/api/online', auth, async (req, res) => {
   try { await persist(); res.json({ ok: true, amount: Number(amount) }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
+app.get('/api/patients', auth, (req, res) => {
+  const date = req.query.date;
+  if (!date) return res.status(400).json({ error: 'date is required' });
+  const username = req.user.role === 'admin' && req.query.username ? req.query.username : req.user.username;
+  if (req.user.role === 'admin' && username === 'all') {
+    const locationId = req.query.locationId && req.query.locationId !== 'all' ? req.query.locationId : null;
+    let count = 0;
+    for (const [key, value] of Object.entries(DB.patientCounts || {})) {
+      const [d, user] = key.split('::');
+      if (d !== date) continue;
+      const u = DB.users.find(x => x.username === user);
+      if (locationId && (!u || u.locationId !== locationId)) continue;
+      count += Number(value || 0);
+    }
+    return res.json({ count });
+  }
+  res.json({ count: Number((DB.patientCounts || {})[date+'::'+username] || 0) });
+});
+app.put('/api/patients', auth, async (req, res) => {
+  const { date, count } = req.body || {};
+  if (!date || count == null || Number(count) < 0 || !Number.isFinite(Number(count))) return res.status(400).json({ error: 'date and a valid patient count are required' });
+  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin.' });
+  DB.patientCounts = DB.patientCounts || {};
+  DB.patientCounts[date+'::'+req.user.username] = Math.round(Number(count));
+  try { await persist(); res.json({ ok: true, count: Math.round(Number(count)) }); }
+  catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
+});
+
 app.get('/api/entries-months', auth, (req, res) => {
   const year = req.query.year;
   const months = Object.keys(DB.entries).filter(m => m.startsWith(year + '-')).sort();
@@ -283,8 +311,18 @@ app.get('/api/management-summary', auth, (req, res) => {
     if(locationId && (!u || u.locationId!==locationId)) continue;
     online.push({date,username:user,amount:Number(amount||0),locationId:u?u.locationId:null});
   }
+  const patients=[];
+  for(const [key,count] of Object.entries(DB.patientCounts||{})){
+    const [date,user]=key.split('::');
+    if(date<from || date>to) continue;
+    if(req.user.role !== 'admin' && user !== req.user.username) continue;
+    if(username && user !== username) continue;
+    const u=DB.users.find(x=>x.username===user);
+    if(locationId && (!u || u.locationId!==locationId)) continue;
+    patients.push({date,username:user,count:Number(count||0),locationId:u?u.locationId:null});
+  }
   const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(req.user.role==='admin'||h.username===req.user.username)&&(username===null||h.username===username)&&(locationId===null||h.locationId===locationId));
-  res.json({entries:rows, online, handovers});
+  res.json({entries:rows, online, patients, handovers});
 });
 app.get('/api/handover-history', auth, (req, res) => {
   const month = req.query.month;
@@ -324,6 +362,7 @@ async function boot() {
       {id:'prime-lab', name:'Prime Lab'}
     ]; changed = true;
     DB.onlineAmounts = DB.onlineAmounts || {};
+    DB.patientCounts = DB.patientCounts || {};
     DB.handovers = DB.handovers || {};
     DB.categories = (DB.categories || []).map(c => c.locationId === undefined ? {...c, locationId:'nmdc-main'} : c);
     DB.users = (DB.users || []).map(u => {

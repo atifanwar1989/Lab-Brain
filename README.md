@@ -34,3 +34,11 @@ Change the password immediately after first login.
 
 ## Deploy
 Set `DATABASE_URL` in Render (or another Node hosting provider), then deploy this project. The app listens on the hosting provider's `PORT`.
+
+
+### Current reporting model
+- Staff enter one daily Patient Count total (not patient-wise records).
+- Reports include Revenue, Cash Counter Expenses, and Patient Count cards.
+- Current-month cards compare month-to-date with the previous month’s same number of days.
+- Trend views use only fully completed months: Last 3 or Last 6 Months; the current incomplete month is excluded.
+- Admin Today view supports Branch/Location plus a user dropdown filtered to users of the selected branch.
