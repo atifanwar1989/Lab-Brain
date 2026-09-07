@@ -18,3 +18,7 @@ Daily cash management and management reporting app for NMDC.
 ## Demo data (for report testing)
 Admin → Reports → Data Safety & Demo → Load Demo Data.
 The demo set uses the current month, days 1–7 when available, and is separately tracked. Use Remove Demo Data to remove only that set.
+
+
+## V16 UI
+Modern responsive dashboard UI refresh. Business logic, calculations, permissions, APIs and existing data model are preserved. Branding switches between NMDC and Prime Lab based on the selected/staff location.
