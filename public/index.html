@@ -299,7 +299,7 @@ function renderToday(){
         <div class="tile-grid">${expenseCats.map(tile).join('')||'<span class="hint">No expense categories yet.</span>'}</div>
       </div>
       <div class="card">
-        <h3>My entries — ${fmtDate(state.currentDate)}</h3>
+        <h3>${state.user.role==='admin'?'All entries':'My entries'} — ${fmtDate(state.currentDate)}</h3>
         <table><thead><tr><th>Time</th><th>Category</th><th>Who / Vendor</th><th class="amt">Amount</th><th>Remarks</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table>
       </div>
@@ -493,12 +493,14 @@ function renderSettings(){
   const staffRows = isAdmin ? state.staff.map(u=>`
     <div class="settings-item">
       <span style="flex:1;">${escapeHtml(u.name)} <span class="hint">(${escapeHtml(u.username)})</span></span>
-      <select onchange="setUserRole('${u.id}', this.value)">
-        <option value="staff" ${u.role==='staff'?'selected':''}>Staff</option>
-        <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
-      </select>
+      ${u.id==='admin'
+        ? `<span class="badge role-admin">Admin · protected</span>`
+        : `<select onchange="setUserRole('${u.id}', this.value)">
+            <option value="staff" ${u.role==='staff'?'selected':''}>Staff</option>
+            <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+          </select>`}
       <button class="icon-btn" onclick="resetUserPassword('${u.id}')">Reset password</button>
-      ${u.id!==state.user.id?`<button class="icon-btn" onclick="removeUser('${u.id}')">Remove</button>`:''}
+      ${u.id!==state.user.id && u.id!=='admin'?`<button class="icon-btn" onclick="removeUser('${u.id}')">Remove</button>`:''}
     </div>`).join('') : '';
 
   return `
