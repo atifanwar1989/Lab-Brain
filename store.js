@@ -69,6 +69,7 @@ function defaultData() {
     vendors: [],
     doctors: [],
     onlineAmounts: {},
+    manualRefunds: {},
     patientCounts: {},
     entries: {},    // monthKey (YYYY-MM) -> array of entries
     handovers: {},  // "date::username" -> handover record

@@ -237,6 +237,22 @@ app.put('/api/online', auth, async (req, res) => {
   try { await persist(); res.json({ ok: true, amount: Number(amount) }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
+app.get('/api/manual-refund', auth, (req, res) => {
+  const date = req.query.date;
+  if (!date) return res.status(400).json({ error: 'date is required' });
+  const username = req.user.role === 'admin' && req.query.username ? req.query.username : req.user.username;
+  res.json({ amount: Number((DB.manualRefunds || {})[date+'::'+username] || 0) });
+});
+app.put('/api/manual-refund', auth, async (req, res) => {
+  const { date, amount } = req.body || {};
+  if (!date || amount == null || Number(amount) < 0 || !Number.isFinite(Number(amount))) return res.status(400).json({ error: 'date and a valid amount are required' });
+  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin.' });
+  DB.manualRefunds = DB.manualRefunds || {};
+  const username = req.user.role === 'admin' && req.body.username ? req.body.username : req.user.username;
+  DB.manualRefunds[date+'::'+username] = Number(amount);
+  try { await persist(); res.json({ ok: true, amount: Number(amount) }); }
+  catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
+});
 app.get('/api/patients', auth, (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
@@ -268,7 +284,8 @@ function daySummary(date, username, locationId) {
   let income=0, expense=0;
   entries.forEach(e=>{ const c=(DB.categories||[]).find(c=>c.id===e.catId); if(c && c.type==='income') income += Number(e.amount||0); else expense += Number(e.amount||0); });
   const online = Number((DB.onlineAmounts||{})[date+'::'+username] || 0);
-  return { income, expense, online, calculated: income - online - expense };
+  const manualRefund = Number((DB.manualRefunds||{})[date+'::'+username] || 0);
+  return { income, expense, online, manualRefund, calculated: income - online - manualRefund - expense };
 }
 app.get('/api/handover', auth, (req, res) => {
   const date = req.query.date;
@@ -285,7 +302,7 @@ app.post('/api/handover', auth, async (req, res) => {
   const s = daySummary(date, username, locationId);
   const short = Number(cashShort||0), excess = Number(excessCash||0);
   const actual = s.calculated - short + excess;
-  DB.handovers[hkey(date, username)] = { calculated:s.calculated, counted:actual, cashShort:short, excessCash:excess, online:s.online, income:s.income, expense:s.expense, locationId, remark: remark || '', closedAt:Date.now() };
+  DB.handovers[hkey(date, username)] = { calculated:s.calculated, counted:actual, cashShort:short, excessCash:excess, online:s.online, manualRefund:s.manualRefund, income:s.income, expense:s.expense, locationId, remark: remark || '', closedAt:Date.now() };
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
@@ -439,6 +456,7 @@ app.get('/api/report.csv', auth, adminOnly, async (req,res)=>{
       const c=(DB.categories||[]).find(c=>c.id===e.catId);const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);
       lines.push([e.date,u?.name||e.username,l?.name||e.locationId,c?.type||'',c?.name||e.catId,e.person||'',Number(e.amount||0),e.note||''].map(esc).join(','));
     }
+    for(const [key,amount] of Object.entries(DB.manualRefunds||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=u&&u.locationId?(DB.locations||[]).find(l=>l.id===u.locationId):null;if(locationId&&(!u||u.locationId!==locationId))continue;lines.push([date,u?.name||user,l?.name||u?.locationId||'','manual refund','Manual Refund','',Number(amount||0),''].map(esc).join(','));}
     for(const [key,h] of Object.entries(DB.handovers||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username)||(locationId&&h.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=(DB.locations||[]).find(l=>l.id===h.locationId);lines.push([date,u?.name||user,l?.name||h.locationId,'handover','Expected Cash / Short / Excess','',Number(h.calculated||0),`Short=${Number(h.cashShort||0)}; Excess=${Number(h.excessCash||0)}; ${h.remark||''}`].map(esc).join(','));}
     res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="lab-brain-report-${from}-to-${to}.csv"`);res.send('\ufeff'+lines.join('\n'));
   }catch(e){console.error(e);res.status(500).send('Could not export report.');}
@@ -469,6 +487,16 @@ app.get('/api/management-summary', auth, (req, res) => {
     if(locationId && (!u || u.locationId!==locationId)) continue;
     online.push({date,username:user,amount:Number(amount||0),locationId:u?u.locationId:null});
   }
+  const manualRefunds=[];
+  for(const [key,amount] of Object.entries(DB.manualRefunds||{})){
+    const [date,user]=key.split('::');
+    if(date<from || date>to) continue;
+    if(req.user.role !== 'admin' && user !== req.user.username) continue;
+    if(username && user !== username) continue;
+    const u=DB.users.find(x=>x.username===user);
+    if(locationId && (!u || u.locationId!==locationId)) continue;
+    manualRefunds.push({date,username:user,amount:Number(amount||0),locationId:u?u.locationId:null});
+  }
   const patients=[];
   for(const [key,count] of Object.entries(DB.patientCounts||{})){
     const [date,user]=key.split('::');
@@ -480,7 +508,7 @@ app.get('/api/management-summary', auth, (req, res) => {
     patients.push({date,username:user,count:Number(count||0),locationId:u?u.locationId:null});
   }
   const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(req.user.role==='admin'||h.username===req.user.username)&&(username===null||h.username===username)&&(locationId===null||h.locationId===locationId));
-  res.json({entries:rows, online, patients, handovers});
+  res.json({entries:rows, online, manualRefunds, patients, handovers});
 });
 app.get('/api/handover-history', auth, (req, res) => {
   const month = req.query.month;
