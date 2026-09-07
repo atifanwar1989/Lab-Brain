@@ -399,6 +399,35 @@ app.post('/api/demo-data/load', auth, adminOnly, async (req,res) => {
     res.json({ok:true,message:`Demo data loaded: ${currentMonthKey} days 1–${Math.max(1,now.getDate())} plus 6 completed months (${completed[completed.length-1]} to ${completed[0]}).`});
   } catch(e) { console.error(e); res.status(500).json({error:'Could not load demo data.'}); }
 });
+app.post('/api/demo-data/remove', auth, adminOnly, async (req,res) => {
+  try {
+    const d = DB.demoData || {entries:[],online:[],patients:[],handovers:[]};
+    const entryIds = new Set((d.entries||[]).map(x=>x.id));
+    let removedEntries = 0;
+    for (const month of Object.keys(DB.entries||{})) {
+      const before = DB.entries[month] || [];
+      const after = before.filter(e => !entryIds.has(e.id));
+      removedEntries += before.length - after.length;
+      DB.entries[month] = after;
+      if (!DB.entries[month].length) delete DB.entries[month];
+    }
+    let removedOnline = 0;
+    for (const key of (d.online||[])) {
+      if (DB.onlineAmounts && Object.prototype.hasOwnProperty.call(DB.onlineAmounts,key)) { delete DB.onlineAmounts[key]; removedOnline++; }
+    }
+    let removedPatients = 0;
+    for (const key of (d.patients||[])) {
+      if (DB.patientCounts && Object.prototype.hasOwnProperty.call(DB.patientCounts,key)) { delete DB.patientCounts[key]; removedPatients++; }
+    }
+    let removedHandovers = 0;
+    for (const key of (d.handovers||[])) {
+      if (DB.handovers && Object.prototype.hasOwnProperty.call(DB.handovers,key)) { delete DB.handovers[key]; removedHandovers++; }
+    }
+    DB.demoData = {entries:[],online:[],patients:[],handovers:[]};
+    await persist();
+    res.json({ok:true,message:`Demo data removed: ${removedEntries} entries, ${removedOnline} online amounts, ${removedPatients} patient counts and ${removedHandovers} handovers.`});
+  } catch(e) { console.error(e); res.status(500).json({error:'Could not remove demo data.'}); }
+});
 app.get('/api/report.csv', auth, adminOnly, async (req,res)=>{
   try{
     const from=req.query.from,to=req.query.to,locationId=req.query.locationId&&req.query.locationId!=='all'?req.query.locationId:null,username=req.query.username&&req.query.username!=='all'?req.query.username:null;
