@@ -26,29 +26,51 @@ async function ensureTable() {
   `);
 }
 
+function defaultLocations() {
+  return [
+    { id: 'nmdc-main', name: 'NMDC – Main Branch' },
+    { id: 'nmdc-ayesha', name: 'NMDC – Ayesha Manzil' },
+    { id: 'nmdc-alkhair', name: 'NMDC – AL-Khair' },
+    { id: 'nmdc-orangi', name: 'NMDC – Orangi Town' },
+    { id: 'prime-lab', name: 'Prime Lab' }
+  ];
+}
+
 function defaultCategories() {
   return [
-    { id: 'lab', name: 'Lab', type: 'income', linkedList: 'none' },
-    { id: 'ultrasound', name: 'Ultrasound', type: 'income', linkedList: 'none' },
-    { id: 'xray', name: 'X-Ray', type: 'income', linkedList: 'none' },
-    { id: 'biopsy', name: 'Biopsy', type: 'income', linkedList: 'none' },
-    { id: 'special_test', name: 'Special Test', type: 'income', linkedList: 'none' },
-    { id: 'tea', name: 'Tea', type: 'expense', linkedList: 'none' },
-    { id: 'overtime', name: 'Overtime', type: 'expense', linkedList: 'employees' },
-    { id: 'dr_zahida', name: 'Dr. Zahida', type: 'expense', linkedList: 'none' },
-    { id: 'vendor_payment', name: 'Vendor Payment', type: 'expense', linkedList: 'vendors' },
-    { id: 'other', name: 'Other', type: 'expense', linkedList: 'none' }
+    { id:'laboratory', name:'Laboratory', type:'income', linkedList:'none', locationId:'nmdc-main' },
+    { id:'xray', name:'Xray', type:'income', linkedList:'none', locationId:'nmdc-main' },
+    { id:'ultrasound', name:'Ultrasound', type:'income', linkedList:'none', locationId:'nmdc-main' },
+    { id:'tea_refreshment', name:'Tea & Refreshment', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'overtime', name:'Overtime', type:'expense', linkedList:'employees', locationId:'nmdc-main' },
+    { id:'transportation', name:'Transportation', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'special_test', name:'Special Test', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'biopsy', name:'Biopsy', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'faizan_fuel', name:'Faizan (Fuel)', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'orangi_bykea', name:'Orangi Bykea', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'ayesha_bykea', name:'Ayesha Manzil (Bykea)', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'alkhair_rent', name:'Al-Khair Rent', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'dr_zahida_share', name:'Dr. Zahida Share', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'ultrasound_dr_share', name:'Ultrasound Dr. Share', type:'expense', linkedList:'doctors', locationId:'nmdc-main' },
+    { id:'business_share_doctor', name:'Business Share (Doctor)', type:'expense', linkedList:'doctors', locationId:'nmdc-main' },
+    { id:'maintenance_mohsin', name:'Maintenance Mohsin', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'general_maintenance', name:'General Maintenance', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'taimoor', name:'Taimoor', type:'expense', linkedList:'none', locationId:'nmdc-main' },
+    { id:'home', name:'Home', type:'expense', linkedList:'none', locationId:'nmdc-main' }
   ];
 }
 
 function defaultData() {
   return {
     users: [], // filled in by server.js on first run, with a hashed password
+    locations: defaultLocations(),
     categories: defaultCategories(),
     employees: [],
     vendors: [],
+    doctors: [],
+    onlineAmounts: {},
     entries: {},    // monthKey (YYYY-MM) -> array of entries
-    handovers: {}   // "date::username" -> { calculated, counted, closedAt }
+    handovers: {}   // "date::username" -> handover record
   };
 }
 
