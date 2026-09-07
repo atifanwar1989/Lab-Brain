@@ -91,3 +91,12 @@ sirf apna data dekhay ga aur dalay ga. Aap (admin) sab kuch dekh saktay hain aur
 Jab bhi mujhe (Claude) is app mein koi naya feature ya tabdeeli karni ho, main aap ko updated files de dunga —
 aap sirf GitHub repo mein wohi files dobara upload kar dein ("Commit changes"), Render khud-ba-khud
 naya version deploy kar dega. Data hamesha wahi rahay ga (Supabase mein hai, code se alag).
+
+
+## Admin recovery / protection
+
+The app now protects the main `admin` account so it cannot accidentally be changed to Staff or removed. On server startup/redeploy, if the existing `admin` account is found with the wrong role, its role is automatically restored to `admin`. Existing entries, handovers, categories, employees, vendors, passwords, and other data are not reset.
+
+The server also refreshes the logged-in user's role from the database on each authenticated request, so restoring the admin role takes effect even if an older login token still contains the Staff role. After redeployment, refresh the browser (or log out and log in again) to see the Admin interface.
+
+The system also prevents the last remaining Admin account from being demoted or deleted.

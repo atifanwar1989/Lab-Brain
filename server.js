@@ -28,7 +28,12 @@ function auth(req, res, next) {
   if (!h) return res.status(401).json({ error: 'Not logged in' });
   const token = h.replace('Bearer ', '');
   try {
-    req.user = jwt.verify(token, SECRET);
+    const claims = jwt.verify(token, SECRET);
+    // Always refresh the role/name from the database. This prevents a stale JWT
+    // from keeping an account in Staff mode after an admin role is restored.
+    const user = DB && DB.users.find(u => u.id === claims.id || u.username === claims.username);
+    if (!user) return res.status(401).json({ error: 'Account no longer exists' });
+    req.user = { id: user.id, username: user.username, role: user.role, name: user.name };
     next();
   } catch (e) {
     return res.status(401).json({ error: 'Session expired, please log in again' });
@@ -118,14 +123,37 @@ app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
   const u = DB.users.find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'Not found' });
   const { name, role, password } = req.body || {};
+
   if (name) u.name = name;
-  if (role) u.role = role === 'admin' ? 'admin' : 'staff';
+  if (role) {
+    const newRole = role === 'admin' ? 'admin' : 'staff';
+    // The bootstrap admin account is a permanent recovery/admin account.
+    if (u.id === 'admin' && newRole !== 'admin') {
+      return res.status(400).json({ error: 'The main admin account cannot be changed to Staff.' });
+    }
+    // Never allow the last remaining admin to be demoted.
+    if (u.role === 'admin' && newRole === 'staff') {
+      const adminCount = DB.users.filter(x => x.role === 'admin').length;
+      if (adminCount <= 1) return res.status(400).json({ error: 'At least one Admin account must remain.' });
+    }
+    // An admin cannot remove their own admin access while logged in.
+    if (u.id === req.user.id && newRole !== 'admin') {
+      return res.status(400).json({ error: 'You cannot change your own account from Admin to Staff.' });
+    }
+    u.role = newRole;
+  }
   if (password) u.passwordHash = bcrypt.hashSync(password, 10);
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
 app.delete('/api/users/:id', auth, adminOnly, async (req, res) => {
   if (req.params.id === req.user.id) return res.status(400).json({ error: 'You cannot remove your own account while logged in as it.' });
+  const u = DB.users.find(x => x.id === req.params.id);
+  if (!u) return res.status(404).json({ error: 'Not found' });
+  if (u.id === 'admin') return res.status(400).json({ error: 'The main admin account cannot be removed.' });
+  if (u.role === 'admin' && DB.users.filter(x => x.role === 'admin').length <= 1) {
+    return res.status(400).json({ error: 'At least one Admin account must remain.' });
+  }
   DB.users = DB.users.filter(u => u.id !== req.params.id);
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
@@ -233,6 +261,16 @@ async function boot() {
       role: 'admin'
     });
     await save(DB);
+  } else {
+    // Recovery safeguard: the original bootstrap admin account must always
+    // remain an Admin. This also repairs an accidental admin -> staff change
+    // on the next server restart/redeploy without touching any entries.
+    const bootstrapAdmin = DB.users.find(u => u.id === 'admin' || u.username === 'admin');
+    if (bootstrapAdmin && bootstrapAdmin.role !== 'admin') {
+      bootstrapAdmin.role = 'admin';
+      await save(DB);
+      console.log('Recovered bootstrap admin account: role restored to admin.');
+    }
   }
   app.listen(PORT, () => {
     console.log('Roznamcha server running on port ' + PORT);
