@@ -188,6 +188,17 @@ app.delete('/api/users/:id', auth, adminOnly, async (req, res) => {
 
 // ---------------- Entries + daily online ----------------
 function userLocation(user) { return user && user.locationId ? user.locationId : null; }
+function resolveWriteLocation(req, requestedLocationId) {
+  const requested = requestedLocationId && requestedLocationId !== 'all' ? requestedLocationId : null;
+  const userLoc = userLocation(req.user);
+  if (requested) {
+    if (!(DB.locations || []).some(l => l.id === requested)) return { error: 'Invalid location.' };
+    if (!isManagementRole(req.user.role) && userLoc !== requested) return { error: 'This location is not assigned to your account.' };
+    return { locationId: requested };
+  }
+  if (userLoc && (DB.locations || []).some(l => l.id === userLoc)) return { locationId: userLoc };
+  return { locationId: null };
+}
 function categoryAllowed(catId, locationId) {
   const cat = (DB.categories || []).find(c => c.id === catId);
   return cat && (!cat.locationId || cat.locationId === locationId);
@@ -293,7 +304,7 @@ app.post('/api/online-entry', auth, async (req,res)=>{
   const {date,amount,note,transferor,locationId}=req.body||{};
   if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0||!String(transferor||'').trim()) return res.status(400).json({error:'Date, amount and transferor name are required.'});
   if(!canEditDate(req,date)) return res.status(403).json({error:'You cannot edit this date now.'});
-  const loc=isManagementRole(req.user.role)?(locationId||null):userLocation(req); if(!loc) return res.status(400).json({error:'A location is required.'});
+  const locResult=resolveWriteLocation(req, locationId); if(locResult.error) return res.status(400).json({error:locResult.error}); const loc=locResult.locationId; if(!loc) return res.status(400).json({error:'A location is required. Select a branch/location first.'});
   const month=date.slice(0,7); DB.onlineEntries[month]=DB.onlineEntries[month]||[];
   const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),transferor:String(transferor).trim(),ts:Date.now()};
   DB.onlineEntries[month].push(entry); try{await persist();res.json({ok:true,entry})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
@@ -306,7 +317,7 @@ app.post('/api/manual-refund-entry', auth, async (req,res)=>{
   const {date,amount,patientName,labNo,note,locationId}=req.body||{};
   if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Date and a valid amount are required.'});
   if(!canEditDate(req,date))return res.status(403).json({error:'You cannot edit this date now.'});
-  const loc=isManagementRole(req.user.role)?(locationId||null):userLocation(req);if(!loc)return res.status(400).json({error:'A location is required.'});
+  const locResult=resolveWriteLocation(req, locationId); if(locResult.error) return res.status(400).json({error:locResult.error}); const loc=locResult.locationId; if(!loc)return res.status(400).json({error:'A location is required. Select a branch/location first.'});
   const month=date.slice(0,7);DB.manualRefundEntries[month]=DB.manualRefundEntries[month]||[];
   const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),patientName:String(patientName||''),labNo:String(labNo||''),note:String(note||''),ts:Date.now()};
   DB.manualRefundEntries[month].push(entry);try{await persist();res.json({ok:true,entry})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
@@ -319,7 +330,7 @@ app.get('/api/ameen/pending',auth,(req,res)=>{
   const rows=allAmeenBookings().filter(r=>canViewAmeen(req,r)&&(username==='all'||!username||r.username===username)&&(locationId==='all'||!locationId||r.locationId===locationId)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)})).filter(r=>r.pending>0).sort((a,b)=>b.date.localeCompare(a.date));res.json({rows});
 });
 app.post('/api/ameen',auth,async(req,res)=>{
-  const {date,amount,note,locationId}=req.body||{};if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Date and a valid amount are required.'});if(!canEditDate(req,date))return res.status(403).json({error:'You cannot edit this date now.'});const loc=isManagementRole(req.user.role)?(locationId||null):userLocation(req);if(!loc)return res.status(400).json({error:'A location is required.'});const month=date.slice(0,7);DB.ameenEntries[month]=DB.ameenEntries[month]||[];const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),payments:[],ts:Date.now()};DB.ameenEntries[month].push(entry);try{await persist();res.json({ok:true,entry})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+  const {date,amount,note,locationId}=req.body||{};if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Date and a valid amount are required.'});if(!canEditDate(req,date))return res.status(403).json({error:'You cannot edit this date now.'});const locResult=resolveWriteLocation(req, locationId); if(locResult.error) return res.status(400).json({error:locResult.error}); const loc=locResult.locationId; if(!loc)return res.status(400).json({error:'A location is required. Select a branch/location first.'});const month=date.slice(0,7);DB.ameenEntries[month]=DB.ameenEntries[month]||[];const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),payments:[],ts:Date.now()};DB.ameenEntries[month].push(entry);try{await persist();res.json({ok:true,entry})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
 });
 app.post('/api/ameen/:id/payment',auth,async(req,res)=>{
   const {date,amount,note}=req.body||{};if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Payment date and valid amount are required.'});if(!canEditDate(req,date))return res.status(403).json({error:'You cannot add a payment for this date now.'});let rec=null;for(const r of allAmeenBookings())if(r.id===req.params.id){rec=r;break}if(!rec)return res.status(404).json({error:'Ameen due not found.'});if(!canViewAmeen(req,rec))return res.status(403).json({error:'This Ameen due is not available for your location.'});const pending=ameenPending(rec);if(Number(amount)>pending)return res.status(400).json({error:`Payment exceeds pending due of Rs ${pending.toLocaleString('en-PK')}.`});const loc=isManagementRole(req.user.role)?(rec.locationId||null):userLocation(req);rec.payments=rec.payments||[];rec.payments.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),ts:Date.now()});try{await persist();res.json({ok:true,remaining:ameenPending(rec)})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}

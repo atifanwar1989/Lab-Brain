@@ -22,3 +22,14 @@ The demo set uses the current month, days 1–7 when available, and is separatel
 
 ## V16 UI
 Modern responsive dashboard UI refresh. Business logic, calculations, permissions, APIs and existing data model are preserved. Branding switches between NMDC and Prime Lab based on the selected/staff location.
+
+
+## V24 changes
+- Fixed entry deletion permissions and date-window behavior.
+- Fixed entry popup Add/Add More/Cancel behavior and immediate UI updates.
+- Added Online detailed entries.
+- Added Manual Refund detailed entries.
+- Added Ameen Booking/Due and Ameen Receipt/Payment workflow.
+- Added automatic location resolution for special entries.
+- Added Ameen receipt card under Income.
+- Existing Supabase data is preserved.
