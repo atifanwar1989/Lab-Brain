@@ -1,22 +1,35 @@
-# Lab-Brain
+# Lab-Brain V26
 
-## V25
+V26 is based on V25 and preserves the existing configuration model and business features.
 
-V25 is based on V24 and preserves the existing application structure and Supabase `app_state` data model.
+## Included fixes
+- Ameen bookings are not revenue; pending Ameen reduces Expected Cash.
+- Ameen receipts increase the receiving user's current-day Expected Cash and do not create new revenue.
+- Partial Ameen payments reduce the remaining pending balance and keep the due in the pending list until fully cleared.
+- Ameen booking cash impact is scoped to the original booking user's portfolio; another user's cash is not reduced by that booking.
+- Ameen pending lookup remains location-wide so another user can receive an existing due.
+- Management can remove Ameen bookings/receipts without the Staff date restriction.
+- Reports use Ameen pending balance rather than gross Ameen booking amount for Expected Cash.
+- Added working Management Individual Entry Manager for deleting transactional records.
+- Added no-cache headers for the deployed HTML to reduce stale-browser frontend issues.
 
-### Ameen accounting and workflow
-- Ameen Booking / Due is **not included in Total Revenue**.
-- On the booking date, the booking amount is deducted from Expected Cash because no physical cash was received.
-- Ameen Receipt is a separate cash-receipt action and is not new revenue.
-- Ameen receipts are linked to an existing pending due.
-- Partial payments are supported; only the remaining balance stays pending.
-- Ameen cash impact is portfolio/user-specific: a booking affects the booking user's cash calculation; a later receipt affects the user who physically receives it.
-- Ameen receipt removal is supported under the normal date/ownership rules and restores the linked due balance.
+## One-time deployment cleanup
+On the first boot of V26, transactional records are cleared once while configuration is preserved. The cleanup affects:
+- normal income/expense entries
+- online entries and legacy online amounts
+- manual refund entries and legacy refund amounts
+- Ameen bookings/receipts
+- patient counts
+- handovers
+- demo-data tracking
 
-### Other preserved behavior
-- Admin/Reviewer management access and Admin settings remain.
-- Staff previous-date correction window remains 00:00–00:30 Pakistan time.
-- Admin is not date/time restricted for entry add/remove.
-- Online and Manual Refund remain individual persistent entries.
-- Existing category/location/custom-list functionality is preserved.
-- Existing Supabase data is not reset by the application update.
+It does NOT clear:
+- users/accounts/roles
+- locations
+- categories
+- employees
+- vendors
+- doctors
+- custom lists
+
+A database migration flag prevents the cleanup from repeating on normal restarts.

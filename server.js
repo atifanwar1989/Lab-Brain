@@ -13,7 +13,9 @@ async function persist(data = DB) { await save(data); }
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+// Prevent stale deployed frontend code from being served from browser/proxy cache.
+app.use((req,res,next)=>{ if(req.path==='/' || req.path.endsWith('.html')) res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate'); next(); });
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0 }));
 
 function sign(user) {
   return jwt.sign(
@@ -341,7 +343,7 @@ app.post('/api/ameen',auth,async(req,res)=>{
 app.post('/api/ameen/:id/payment',auth,async(req,res)=>{
   const {date,amount,note}=req.body||{};if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Payment date and valid amount are required.'});if(!canEditDate(req,date))return res.status(403).json({error:'You cannot add a payment for this date now.'});let rec=null;for(const r of allAmeenBookings())if(r.id===req.params.id){rec=r;break}if(!rec)return res.status(404).json({error:'Ameen due not found.'});if(!canViewAmeen(req,rec))return res.status(403).json({error:'This Ameen due is not available for your location.'});const pending=ameenPending(rec);if(Number(amount)>pending)return res.status(400).json({error:`Payment exceeds pending due of Rs ${pending.toLocaleString('en-PK')}.`});const loc=isManagementRole(req.user.role)?(rec.locationId||null):userLocation(req);rec.payments=rec.payments||[];rec.payments.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),ts:Date.now()});try{await persist();res.json({ok:true,remaining:ameenPending(rec)})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
 });
-app.delete('/api/ameen/:id',auth,async(req,res)=>{const month=req.query.month,arr=DB.ameenEntries[month]||[],i=arr.findIndex(x=>x.id===req.params.id);if(i<0)return res.status(404).json({error:'Not found'});const r=arr[i];if(!isManagementRole(req.user.role)&&r.username!==req.user.username)return res.status(403).json({error:'You can only remove your own Ameen booking'});if(!canEditDate(req,r.date))return res.status(403).json({error:'You cannot edit this date now.'});if((r.payments||[]).length)return res.status(400).json({error:'Ameen booking with payments cannot be removed.'});arr.splice(i,1);if(!arr.length)delete DB.ameenEntries[month];try{await persist();res.json({ok:true})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}});
+app.delete('/api/ameen/:id',auth,async(req,res)=>{const month=req.query.month,arr=DB.ameenEntries[month]||[],i=arr.findIndex(x=>x.id===req.params.id);if(i<0)return res.status(404).json({error:'Not found'});const r=arr[i];if(!isManagementRole(req.user.role)&&r.username!==req.user.username)return res.status(403).json({error:'You can only remove your own Ameen booking'});if(!canEditDate(req,r.date))return res.status(403).json({error:'You cannot edit this date now.'});if((r.payments||[]).length && !isManagementRole(req.user.role))return res.status(400).json({error:'Ameen booking with payments cannot be removed by Staff. Remove the receipt first.'});arr.splice(i,1);if(!arr.length)delete DB.ameenEntries[month];try{await persist();res.json({ok:true})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}});
 app.delete('/api/ameen/:id/payment/:paymentId',auth,async(req,res)=>{
   let rec=null; for(const r of allAmeenBookings()) if(r.id===req.params.id){rec=r;break}
   if(!rec) return res.status(404).json({error:'Ameen due not found.'});
@@ -722,6 +724,24 @@ async function boot() {
     DB.vendors = Array.isArray(DB.vendors) ? DB.vendors : [];
     DB.doctors = Array.isArray(DB.doctors) ? DB.doctors : [];
     Object.keys(DB.entries).forEach(m => { DB.entries[m] = (DB.entries[m]||[]).map(e => e.locationId ? e : {...e, locationId:'nmdc-main'}); });
+    // V26 one-time clean start: clear transactional records while preserving all
+    // configuration (users, roles, locations, categories, employees, doctors, vendors, custom lists).
+    // The flag lives in the database so this does not repeat on every restart.
+    DB.migrations = DB.migrations || {};
+    if (!DB.migrations.clearTransactionsV26) {
+      DB.onlineAmounts = {};
+      DB.manualRefunds = {};
+      DB.onlineEntries = {};
+      DB.manualRefundEntries = {};
+      DB.ameenEntries = {};
+      DB.patientCounts = {};
+      DB.entries = {};
+      DB.handovers = {};
+      DB.demoData = { entries: [], online: [], patients: [], handovers: [] };
+      DB.migrations.clearTransactionsV26 = true;
+      changed = true;
+      console.log('V26 one-time cleanup: transactional records cleared; configuration preserved.');
+    }
     if (changed) await save(DB);
   }
   app.listen(PORT, () => {
