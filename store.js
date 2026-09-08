@@ -71,6 +71,9 @@ function defaultData() {
     customLists: [], // user-created reusable lists for category dropdowns
     onlineAmounts: {},
     manualRefunds: {},
+    onlineEntries: {},
+    manualRefundEntries: {},
+    ameenEntries: {},
     patientCounts: {},
     entries: {},    // monthKey (YYYY-MM) -> array of entries
     handovers: {},  // "date::username" -> handover record

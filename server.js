@@ -208,6 +208,34 @@ function canEditDate(req, date) {
   return date===previousDate(now.date) && now.hour===0 && now.minute<=30;
 }
 
+function canViewAmeen(req, rec) {
+  if (isManagementRole(req.user.role)) return true;
+  return rec.locationId === userLocation(req.user);
+}
+function specialDateRows(map, date, username, locationId) {
+  const rows=[];
+  for (const month of Object.keys(map||{})) for (const r of (map[month]||[])) {
+    if (r.date!==date) continue;
+    if (username && username!=='all' && r.username!==username) continue;
+    if (locationId && locationId!=='all' && r.locationId!==locationId) continue;
+    rows.push(r);
+  }
+  return rows;
+}
+function allAmeenBookings() { return Object.values(DB.ameenEntries||{}).flat(); }
+function ameenPaidTotal(rec) { return (rec.payments||[]).reduce((a,p)=>a+Number(p.amount||0),0); }
+function ameenPending(rec) { return Math.max(0, Number(rec.amount||0)-ameenPaidTotal(rec)); }
+function ameenPaymentRows(from,to,username,locationId) {
+  const rows=[];
+  for (const rec of allAmeenBookings()) for (const p of (rec.payments||[])) {
+    if (p.date<from || p.date>to) continue;
+    if (username && username!=='all' && p.username!==username) continue;
+    if (locationId && locationId!=='all' && p.locationId!==locationId) continue;
+    rows.push({...p, ameenId:rec.id, bookingDate:rec.date, bookingAmount:rec.amount, bookingNote:rec.note||''});
+  }
+  return rows;
+}
+
 app.get('/api/entries', auth, (req, res) => {
   const month = req.query.month;
   if (!month) return res.status(400).json({ error: 'month is required' });
@@ -246,6 +274,58 @@ app.delete('/api/entries/:id', auth, async (req, res) => {
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
+
+app.get('/api/special-entries', auth, (req,res)=>{
+  const date=req.query.date;
+  if(!date) return res.status(400).json({error:'date is required'});
+  const username=isManagementRole(req.user.role)?(req.query.username||'all'):req.user.username;
+  const locationId=isManagementRole(req.user.role)?(req.query.locationId||'all'):userLocation(req.user);
+  const legacyOnline=username==='all'?0:Object.entries(DB.onlineAmounts||{}).filter(([k])=>k===date+'::'+username).reduce((a,[,v])=>a+Number(v||0),0);
+  const legacyRefund=username==='all'?0:Object.entries(DB.manualRefunds||{}).filter(([k])=>k===date+'::'+username).reduce((a,[,v])=>a+Number(v||0),0);
+  const online=specialDateRows(DB.onlineEntries,date,username,locationId);
+  const refunds=specialDateRows(DB.manualRefundEntries,date,username,locationId);
+  const ameenUsername=isManagementRole(req.user.role)?username:'all';
+  const bookings=specialDateRows(DB.ameenEntries,date,ameenUsername,locationId).filter(r=>canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));
+  const payments=ameenPaymentRows(date,date,ameenUsername,locationId).filter(p=>isManagementRole(req.user.role)||p.locationId===locationId);
+  res.json({onlineEntries:online,manualRefundEntries:refunds,ameenEntries:bookings,ameenPayments:payments,legacyOnline,legacyRefund});
+});
+app.post('/api/online-entry', auth, async (req,res)=>{
+  const {date,amount,note,transferor,locationId}=req.body||{};
+  if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0||!String(transferor||'').trim()) return res.status(400).json({error:'Date, amount and transferor name are required.'});
+  if(!canEditDate(req,date)) return res.status(403).json({error:'You cannot edit this date now.'});
+  const loc=isManagementRole(req.user.role)?(locationId||null):userLocation(req); if(!loc) return res.status(400).json({error:'A location is required.'});
+  const month=date.slice(0,7); DB.onlineEntries[month]=DB.onlineEntries[month]||[];
+  const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),transferor:String(transferor).trim(),ts:Date.now()};
+  DB.onlineEntries[month].push(entry); try{await persist();res.json({ok:true,entry})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+});
+app.delete('/api/online-entry/:id', auth, async (req,res)=>{
+  const month=req.query.month; const arr=DB.onlineEntries[month]||[]; const i=arr.findIndex(x=>x.id===req.params.id); if(i<0)return res.status(404).json({error:'Not found'});
+  const r=arr[i]; if(!isManagementRole(req.user.role)&&r.username!==req.user.username)return res.status(403).json({error:'You can only remove your own entries'}); if(!canEditDate(req,r.date))return res.status(403).json({error:'You cannot edit this date now.'}); arr.splice(i,1); if(!arr.length)delete DB.onlineEntries[month]; try{await persist();res.json({ok:true})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+});
+app.post('/api/manual-refund-entry', auth, async (req,res)=>{
+  const {date,amount,patientName,labNo,note,locationId}=req.body||{};
+  if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Date and a valid amount are required.'});
+  if(!canEditDate(req,date))return res.status(403).json({error:'You cannot edit this date now.'});
+  const loc=isManagementRole(req.user.role)?(locationId||null):userLocation(req);if(!loc)return res.status(400).json({error:'A location is required.'});
+  const month=date.slice(0,7);DB.manualRefundEntries[month]=DB.manualRefundEntries[month]||[];
+  const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),patientName:String(patientName||''),labNo:String(labNo||''),note:String(note||''),ts:Date.now()};
+  DB.manualRefundEntries[month].push(entry);try{await persist();res.json({ok:true,entry})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+});
+app.delete('/api/manual-refund-entry/:id', auth, async (req,res)=>{
+  const month=req.query.month,arr=DB.manualRefundEntries[month]||[],i=arr.findIndex(x=>x.id===req.params.id);if(i<0)return res.status(404).json({error:'Not found'});const r=arr[i];if(!isManagementRole(req.user.role)&&r.username!==req.user.username)return res.status(403).json({error:'You can only remove your own entries'});if(!canEditDate(req,r.date))return res.status(403).json({error:'You cannot edit this date now.'});arr.splice(i,1);if(!arr.length)delete DB.manualRefundEntries[month];try{await persist();res.json({ok:true})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+});
+app.get('/api/ameen/pending',auth,(req,res)=>{
+  const username=isManagementRole(req.user.role)?(req.query.username||'all'):null; const locationId=isManagementRole(req.user.role)?(req.query.locationId||'all'):userLocation(req);
+  const rows=allAmeenBookings().filter(r=>canViewAmeen(req,r)&&(username==='all'||!username||r.username===username)&&(locationId==='all'||!locationId||r.locationId===locationId)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)})).filter(r=>r.pending>0).sort((a,b)=>b.date.localeCompare(a.date));res.json({rows});
+});
+app.post('/api/ameen',auth,async(req,res)=>{
+  const {date,amount,note,locationId}=req.body||{};if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Date and a valid amount are required.'});if(!canEditDate(req,date))return res.status(403).json({error:'You cannot edit this date now.'});const loc=isManagementRole(req.user.role)?(locationId||null):userLocation(req);if(!loc)return res.status(400).json({error:'A location is required.'});const month=date.slice(0,7);DB.ameenEntries[month]=DB.ameenEntries[month]||[];const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),payments:[],ts:Date.now()};DB.ameenEntries[month].push(entry);try{await persist();res.json({ok:true,entry})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+});
+app.post('/api/ameen/:id/payment',auth,async(req,res)=>{
+  const {date,amount,note}=req.body||{};if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Payment date and valid amount are required.'});if(!canEditDate(req,date))return res.status(403).json({error:'You cannot add a payment for this date now.'});let rec=null;for(const r of allAmeenBookings())if(r.id===req.params.id){rec=r;break}if(!rec)return res.status(404).json({error:'Ameen due not found.'});if(!canViewAmeen(req,rec))return res.status(403).json({error:'This Ameen due is not available for your location.'});const pending=ameenPending(rec);if(Number(amount)>pending)return res.status(400).json({error:`Payment exceeds pending due of Rs ${pending.toLocaleString('en-PK')}.`});const loc=isManagementRole(req.user.role)?(rec.locationId||null):userLocation(req);rec.payments=rec.payments||[];rec.payments.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),ts:Date.now()});try{await persist();res.json({ok:true,remaining:ameenPending(rec)})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+});
+app.delete('/api/ameen/:id',auth,async(req,res)=>{const month=req.query.month,arr=DB.ameenEntries[month]||[],i=arr.findIndex(x=>x.id===req.params.id);if(i<0)return res.status(404).json({error:'Not found'});const r=arr[i];if(!isManagementRole(req.user.role)&&r.username!==req.user.username)return res.status(403).json({error:'You can only remove your own Ameen booking'});if(!canEditDate(req,r.date))return res.status(403).json({error:'You cannot edit this date now.'});if((r.payments||[]).length)return res.status(400).json({error:'Ameen booking with payments cannot be removed.'});arr.splice(i,1);if(!arr.length)delete DB.ameenEntries[month];try{await persist();res.json({ok:true})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}});
+
 app.get('/api/online', auth, (req, res) => {
   const date = req.query.date;
   const username = isManagementRole(req.user.role) && req.query.username ? req.query.username : req.user.username;
@@ -481,6 +561,9 @@ app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
       lines.push([e.date,u?.name||e.username,l?.name||e.locationId,c?.type||'',c?.name||e.catId,e.person||'',Number(e.amount||0),e.note||''].map(esc).join(','));
     }
     for(const [key,amount] of Object.entries(DB.manualRefunds||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=u&&u.locationId?(DB.locations||[]).find(l=>l.id===u.locationId):null;if(locationId&&(!u||u.locationId!==locationId))continue;lines.push([date,u?.name||user,l?.name||u?.locationId||'','manual refund','Manual Refund','',Number(amount||0),''].map(esc).join(','));}
+    for(const month of Object.keys(DB.onlineEntries||{})) for(const e of (DB.onlineEntries[month]||[])){if(e.date<from||e.date>to||(username&&e.username!==username)||(locationId&&e.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);lines.push([e.date,u?.name||e.username,l?.name||e.locationId,'online','Online',e.transferor||'',Number(e.amount||0),e.note||''].map(esc).join(','));}
+    for(const month of Object.keys(DB.manualRefundEntries||{})) for(const e of (DB.manualRefundEntries[month]||[])){if(e.date<from||e.date>to||(username&&e.username!==username)||(locationId&&e.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);lines.push([e.date,u?.name||e.username,l?.name||e.locationId,'manual refund','Manual Refund',e.patientName||'',Number(e.amount||0),[e.labNo,e.note].filter(Boolean).join(' | ')].map(esc).join(','));}
+    for(const r of allAmeenBookings()){if(r.date<from||r.date>to||(username&&r.username!==username)||(locationId&&r.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===r.username);const l=(DB.locations||[]).find(l=>l.id===r.locationId);lines.push([r.date,u?.name||r.username,l?.name||r.locationId,'ameen','Ameen','',Number(r.amount||0),r.note||''].map(esc).join(','));for(const pay of (r.payments||[])){if(pay.date<from||pay.date>to||(username&&pay.username!==username)||(locationId&&pay.locationId!==locationId))continue;const pu=(DB.users||[]).find(u=>u.username===pay.username);const pl=(DB.locations||[]).find(l=>l.id===pay.locationId);lines.push([pay.date,pu?.name||pay.username,pl?.name||pay.locationId,'ameen payment','Ameen Payment','',Number(pay.amount||0),`Against ${r.date}; ${pay.note||''}`].map(esc).join(','));}}
     for(const [key,h] of Object.entries(DB.handovers||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username)||(locationId&&h.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=(DB.locations||[]).find(l=>l.id===h.locationId);lines.push([date,u?.name||user,l?.name||h.locationId,'handover','Expected Cash / Short / Excess','',Number(h.calculated||0),`Short=${Number(h.cashShort||0)}; Excess=${Number(h.excessCash||0)}; ${h.remark||''}`].map(esc).join(','));}
     res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="lab-brain-report-${from}-to-${to}.csv"`);res.send('\ufeff'+lines.join('\n'));
   }catch(e){console.error(e);res.status(500).send('Could not export report.');}
@@ -531,8 +614,12 @@ app.get('/api/management-summary', auth, (req, res) => {
     if(locationId && (!u || u.locationId!==locationId)) continue;
     patients.push({date,username:user,count:Number(count||0),locationId:u?u.locationId:null});
   }
+  const onlineEntries=[]; for(const month of Object.keys(DB.onlineEntries||{})) for(const r of (DB.onlineEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;onlineEntries.push(r);}
+  const manualRefundEntries=[]; for(const month of Object.keys(DB.manualRefundEntries||{})) for(const r of (DB.manualRefundEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;manualRefundEntries.push(r);}
+  const ameenBookings=[]; for(const r of allAmeenBookings()){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.locationId!==userLocation(req))continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;ameenBookings.push({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)});}
+  const ameenPayments=ameenPaymentRows(from,to,username,locationId).filter(p=>isManagementRole(req.user.role)||p.locationId===userLocation(req));
   const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(isManagementRole(req.user.role)||h.username===req.user.username)&&(username===null||h.username===username)&&(locationId===null||h.locationId===locationId));
-  res.json({entries:rows, online, manualRefunds, patients, handovers});
+  res.json({entries:rows, online, manualRefunds, patients, handovers, onlineEntries, manualRefundEntries, ameenBookings, ameenPayments});
 });
 app.get('/api/handover-history', auth, (req, res) => {
   const month = req.query.month;
@@ -575,6 +662,9 @@ async function boot() {
     }
     DB.onlineAmounts = DB.onlineAmounts || {};
     DB.manualRefunds = DB.manualRefunds || {};
+    DB.onlineEntries = DB.onlineEntries || {};
+    DB.manualRefundEntries = DB.manualRefundEntries || {};
+    DB.ameenEntries = DB.ameenEntries || {};
     DB.patientCounts = DB.patientCounts || {};
     DB.handovers = DB.handovers || {};
     DB.customLists = Array.isArray(DB.customLists) ? DB.customLists : [];
