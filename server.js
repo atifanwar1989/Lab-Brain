@@ -39,8 +39,13 @@ function auth(req, res, next) {
     return res.status(401).json({ error: 'Session expired, please log in again' });
   }
 }
+function isManagementRole(role) { return role === 'admin' || role === 'reviewer'; }
 function adminOnly(req, res, next) {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  next();
+}
+function managementOnly(req, res, next) {
+  if (!isManagementRole(req.user.role)) return res.status(403).json({ error: 'Management access required' });
   next();
 }
 // Every route below runs only after boot() has finished loading DB + SECRET.
@@ -91,7 +96,7 @@ app.get('/api/config', auth, (req, res) => {
   const staff = DB.users.map(u => ({
     id: u.id, name: u.name, username: u.username, role: u.role, locationId: u.locationId || null
   }));
-  res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], staff });
+  res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], staff });
 });
 app.put('/api/config/categories', auth, adminOnly, async (req, res) => {
   DB.categories = Array.isArray(req.body.categories) ? req.body.categories : [];
@@ -113,6 +118,11 @@ app.put('/api/config/vendors', auth, adminOnly, async (req, res) => {
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
+app.put('/api/config/custom-lists', auth, adminOnly, async (req, res) => {
+  DB.customLists = Array.isArray(req.body.customLists) ? req.body.customLists : [];
+  try { await persist(); res.json({ ok: true }); }
+  catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
+});
 app.put('/api/config/locations', auth, adminOnly, async (req, res) => {
   DB.locations = Array.isArray(req.body.locations) ? req.body.locations : [];
   try { await persist(); res.json({ ok: true }); }
@@ -124,8 +134,9 @@ app.post('/api/users', auth, adminOnly, async (req, res) => {
   const { name, username, password, role, locationId } = req.body || {};
   if (!name || !username || !password) return res.status(400).json({ error: 'Name, username and password are required' });
   if (DB.users.some(u => u.username === username)) return res.status(400).json({ error: 'Username already exists' });
-  if (role !== 'admin' && !(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: 'A location is required for Staff accounts.' });
-  DB.users.push({ id: username.toLowerCase(), name, username, passwordHash: bcrypt.hashSync(password, 10), role: role === 'admin' ? 'admin' : 'staff', locationId: role === 'admin' ? null : locationId });
+  const newRole = ['admin','reviewer','staff'].includes(role) ? role : 'staff';
+  if (newRole === 'staff' && !(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: 'A location is required for Staff accounts.' });
+  DB.users.push({ id: username.toLowerCase(), name, username, passwordHash: bcrypt.hashSync(password, 10), role: newRole, locationId: newRole === 'staff' ? locationId : null });
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
@@ -135,13 +146,13 @@ app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
   const { name, role, password, locationId } = req.body || {};
   if (name) u.name = name;
   if (role) {
-    const newRole = role === 'admin' ? 'admin' : 'staff';
-    if (u.id === 'admin' && newRole !== 'admin') return res.status(400).json({ error: 'The main admin account cannot be changed to Staff.' });
-    if (u.role === 'admin' && newRole === 'staff' && DB.users.filter(x => x.role === 'admin').length <= 1) return res.status(400).json({ error: 'At least one Admin account must remain.' });
-    if (u.id === req.user.id && newRole !== 'admin') return res.status(400).json({ error: 'You cannot change your own account from Admin to Staff.' });
+    const newRole = ['admin','reviewer','staff'].includes(role) ? role : 'staff';
+    if (u.id === 'admin' && newRole !== 'admin') return res.status(400).json({ error: 'The main admin account cannot be changed to Staff/Reviewer.' });
+    if (u.role === 'admin' && newRole !== 'admin' && DB.users.filter(x => x.role === 'admin').length <= 1) return res.status(400).json({ error: 'At least one Admin account must remain.' });
+    if (u.id === req.user.id && newRole !== 'admin') return res.status(400).json({ error: 'You cannot change your own account from Admin to Staff/Reviewer.' });
     if (newRole === 'staff' && !(DB.locations || []).some(l => l.id === (locationId || u.locationId))) return res.status(400).json({ error: 'A valid location is required for Staff.' });
     u.role = newRole;
-    u.locationId = newRole === 'admin' ? null : (locationId || u.locationId);
+    u.locationId = newRole === 'staff' ? (locationId || u.locationId) : null;
   } else if (u.role === 'staff' && locationId) {
     if (!(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: 'Invalid location.' });
     u.locationId = locationId;
@@ -182,13 +193,26 @@ function categoryAllowed(catId, locationId) {
   return cat && (!cat.locationId || cat.locationId === locationId);
 }
 function todayPakistan() { return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Karachi',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }
-function canEditDate(req, date) { return req.user.role === 'admin' || date === todayPakistan(); }
+function pakistanDateTime() {
+  const parts = new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Karachi',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date());
+  const get=k=>parts.find(p=>p.type===k)?.value;
+  return { date:`${get('year')}-${get('month')}-${get('day')}`, hour:Number(get('hour')), minute:Number(get('minute')) };
+}
+function previousDate(dateStr) { const d=new Date(dateStr+'T12:00:00Z'); d.setUTCDate(d.getUTCDate()-1); return d.toISOString().slice(0,10); }
+function canEditDate(req, date) {
+  if (isManagementRole(req.user.role)) return true;
+  const now=pakistanDateTime();
+  if (date===now.date) return true;
+  // Evening shift may finish shortly after midnight. Staff can correct the previous
+  // calendar date until 00:30 Pakistan time, then only Admin/Reviewer may edit it.
+  return date===previousDate(now.date) && now.hour===0 && now.minute<=30;
+}
 
 app.get('/api/entries', auth, (req, res) => {
   const month = req.query.month;
   if (!month) return res.status(400).json({ error: 'month is required' });
   let arr = DB.entries[month] || [];
-  if (req.user.role !== 'admin') {
+  if (!isManagementRole(req.user.role)) {
     arr = arr.filter(e => e.username === req.user.username && e.locationId === userLocation(req.user));
   } else {
     if (req.query.username && req.query.username !== 'all') arr = arr.filter(e => e.username === req.query.username);
@@ -200,8 +224,8 @@ app.post('/api/entries', auth, async (req, res) => {
   const { date, catId, amount, note, person } = req.body || {};
   if (!date || !catId || !amount) return res.status(400).json({ error: 'date, catId and amount are required' });
   if (!canEditDate(req, date)) return res.status(403).json({ error: 'Staff can only correct the current date. Previous dates require Admin.' });
-  const locationId = req.user.role === 'admin' ? (req.body.locationId || null) : userLocation(req.user);
-  if (req.user.role !== 'admin' && !locationId) return res.status(400).json({ error: 'Your account has no location assigned.' });
+  const locationId = isManagementRole(req.user.role) ? (req.body.locationId || null) : userLocation(req.user);
+  if (!isManagementRole(req.user.role) && !locationId) return res.status(400).json({ error: 'Your account has no location assigned.' });
   if (!categoryAllowed(catId, locationId)) return res.status(400).json({ error: 'This category is not available for this location.' });
   const month = date.slice(0, 7);
   DB.entries[month] = DB.entries[month] || [];
@@ -216,21 +240,21 @@ app.delete('/api/entries/:id', auth, async (req, res) => {
   const idx = DB.entries[month].findIndex(e => e.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const entry = DB.entries[month][idx];
-  if (req.user.role !== 'admin' && entry.username !== req.user.username) return res.status(403).json({ error: 'You can only remove your own entries' });
-  if (!canEditDate(req, entry.date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin.' });
+  if (!isManagementRole(req.user.role) && entry.username !== req.user.username) return res.status(403).json({ error: 'You can only remove your own entries' });
+  if (!canEditDate(req, entry.date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin/Reviewer.' });
   DB.entries[month].splice(idx, 1);
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
 app.get('/api/online', auth, (req, res) => {
   const date = req.query.date;
-  const username = req.user.role === 'admin' && req.query.username ? req.query.username : req.user.username;
+  const username = isManagementRole(req.user.role) && req.query.username ? req.query.username : req.user.username;
   res.json({ amount: Number((DB.onlineAmounts || {})[date+'::'+username] || 0) });
 });
 app.put('/api/online', auth, async (req, res) => {
   const { date, amount } = req.body || {};
   if (!date || amount == null || Number(amount) < 0) return res.status(400).json({ error: 'date and a valid amount are required' });
-  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin.' });
+  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin/Reviewer.' });
   DB.onlineAmounts = DB.onlineAmounts || {};
   const username = req.user.username;
   DB.onlineAmounts[date+'::'+username] = Number(amount);
@@ -240,15 +264,15 @@ app.put('/api/online', auth, async (req, res) => {
 app.get('/api/manual-refund', auth, (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
-  const username = req.user.role === 'admin' && req.query.username ? req.query.username : req.user.username;
+  const username = isManagementRole(req.user.role) && req.query.username ? req.query.username : req.user.username;
   res.json({ amount: Number((DB.manualRefunds || {})[date+'::'+username] || 0) });
 });
 app.put('/api/manual-refund', auth, async (req, res) => {
   const { date, amount } = req.body || {};
   if (!date || amount == null || Number(amount) < 0 || !Number.isFinite(Number(amount))) return res.status(400).json({ error: 'date and a valid amount are required' });
-  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin.' });
+  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin/Reviewer.' });
   DB.manualRefunds = DB.manualRefunds || {};
-  const username = req.user.role === 'admin' && req.body.username ? req.body.username : req.user.username;
+  const username = isManagementRole(req.user.role) && req.body.username ? req.body.username : req.user.username;
   DB.manualRefunds[date+'::'+username] = Number(amount);
   try { await persist(); res.json({ ok: true, amount: Number(amount) }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
@@ -256,16 +280,16 @@ app.put('/api/manual-refund', auth, async (req, res) => {
 app.get('/api/patients', auth, (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
-  const username = req.user.role === 'admin' && req.query.username ? req.query.username : req.user.username;
+  const username = isManagementRole(req.user.role) && req.query.username ? req.query.username : req.user.username;
   const key = date + '::' + username;
   res.json({ count: Number((DB.patientCounts || {})[key] || 0) });
 });
 app.put('/api/patients', auth, async (req, res) => {
   const { date, count } = req.body || {};
   if (!date || count == null || Number(count) < 0 || !Number.isFinite(Number(count))) return res.status(400).json({ error: 'date and a valid patient count are required' });
-  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin.' });
+  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin/Reviewer.' });
   DB.patientCounts = DB.patientCounts || {};
-  const username = req.user.role === 'admin' && req.body.username ? req.body.username : req.user.username;
+  const username = isManagementRole(req.user.role) && req.body.username ? req.body.username : req.user.username;
   DB.patientCounts[date + '::' + username] = Math.round(Number(count));
   try { await persist(); res.json({ ok:true, count:Math.round(Number(count)) }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
@@ -289,13 +313,13 @@ function daySummary(date, username, locationId) {
 }
 app.get('/api/handover', auth, (req, res) => {
   const date = req.query.date;
-  const username = (req.user.role === 'admin' && req.query.username) ? req.query.username : req.user.username;
-  res.json({ handover: DB.handovers[hkey(date, username)] || null, summary: daySummary(date, username, req.user.role==='admin' ? null : userLocation(req.user)) });
+  const username = (isManagementRole(req.user.role) && req.query.username) ? req.query.username : req.user.username;
+  res.json({ handover: DB.handovers[hkey(date, username)] || null, summary: daySummary(date, username, isManagementRole(req.user.role) ? null : userLocation(req.user)) });
 });
 app.post('/api/handover', auth, async (req, res) => {
   const { date, cashShort, excessCash, remark } = req.body || {};
   if (!date) return res.status(400).json({ error: 'date is required' });
-  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates require Admin.' });
+  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates require Admin/Reviewer.' });
   if (Number(cashShort||0) > 0 && Number(excessCash||0) > 0) return res.status(400).json({ error: 'Enter either Cash Short or Excess Cash, not both.' });
   const username = req.user.username;
   const locationId = userLocation(req.user);
@@ -308,8 +332,8 @@ app.post('/api/handover', auth, async (req, res) => {
 });
 app.post('/api/handover/reopen', auth, async (req, res) => {
   const { date } = req.body || {};
-  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates require Admin.' });
-  const username = req.user.role === 'admin' && req.body.username ? req.body.username : req.user.username;
+  if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates require Admin/Reviewer.' });
+  const username = isManagementRole(req.user.role) && req.body.username ? req.body.username : req.user.username;
   delete DB.handovers[hkey(date, username)];
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
@@ -445,7 +469,7 @@ app.post('/api/demo-data/remove', auth, adminOnly, async (req,res) => {
     res.json({ok:true,message:`Demo data removed: ${removedEntries} entries, ${removedOnline} online amounts, ${removedPatients} patient counts and ${removedHandovers} handovers.`});
   } catch(e) { console.error(e); res.status(500).json({error:'Could not remove demo data.'}); }
 });
-app.get('/api/report.csv', auth, adminOnly, async (req,res)=>{
+app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
   try{
     const from=req.query.from,to=req.query.to,locationId=req.query.locationId&&req.query.locationId!=='all'?req.query.locationId:null,username=req.query.username&&req.query.username!=='all'?req.query.username:null;
     if(!from||!to)return res.status(400).send('from and to are required');
@@ -471,7 +495,7 @@ app.get('/api/management-summary', auth, (req, res) => {
   for(const month of Object.keys(DB.entries||{})){
     for(const e of (DB.entries[month]||[])){
       if(e.date < from || e.date > to) continue;
-      if(req.user.role !== 'admin' && e.username !== req.user.username) continue;
+      if(!isManagementRole(req.user.role) && e.username !== req.user.username) continue;
       if(username && e.username !== username) continue;
       if(locationId && e.locationId !== locationId) continue;
       rows.push(e);
@@ -481,7 +505,7 @@ app.get('/api/management-summary', auth, (req, res) => {
   for(const [key,amount] of Object.entries(DB.onlineAmounts||{})){
     const [date,user]=key.split('::');
     if(date<from || date>to) continue;
-    if(req.user.role !== 'admin' && user !== req.user.username) continue;
+    if(!isManagementRole(req.user.role) && user !== req.user.username) continue;
     if(username && user !== username) continue;
     const u=DB.users.find(x=>x.username===user);
     if(locationId && (!u || u.locationId!==locationId)) continue;
@@ -491,7 +515,7 @@ app.get('/api/management-summary', auth, (req, res) => {
   for(const [key,amount] of Object.entries(DB.manualRefunds||{})){
     const [date,user]=key.split('::');
     if(date<from || date>to) continue;
-    if(req.user.role !== 'admin' && user !== req.user.username) continue;
+    if(!isManagementRole(req.user.role) && user !== req.user.username) continue;
     if(username && user !== username) continue;
     const u=DB.users.find(x=>x.username===user);
     if(locationId && (!u || u.locationId!==locationId)) continue;
@@ -501,18 +525,18 @@ app.get('/api/management-summary', auth, (req, res) => {
   for(const [key,count] of Object.entries(DB.patientCounts||{})){
     const [date,user]=key.split('::');
     if(date<from || date>to) continue;
-    if(req.user.role !== 'admin' && user !== req.user.username) continue;
+    if(!isManagementRole(req.user.role) && user !== req.user.username) continue;
     if(username && user !== username) continue;
     const u=DB.users.find(x=>x.username===user);
     if(locationId && (!u || u.locationId!==locationId)) continue;
     patients.push({date,username:user,count:Number(count||0),locationId:u?u.locationId:null});
   }
-  const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(req.user.role==='admin'||h.username===req.user.username)&&(username===null||h.username===username)&&(locationId===null||h.locationId===locationId));
+  const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(isManagementRole(req.user.role)||h.username===req.user.username)&&(username===null||h.username===username)&&(locationId===null||h.locationId===locationId));
   res.json({entries:rows, online, manualRefunds, patients, handovers});
 });
 app.get('/api/handover-history', auth, (req, res) => {
   const month = req.query.month;
-  const rows = Object.entries(DB.handovers).filter(([k])=>k.startsWith(month)).map(([k,v])=>{const [date,username]=k.split('::'); return {date,username,...v};}).filter(r=>req.user.role==='admin'||r.username===req.user.username).sort((a,b)=>a.date.localeCompare(b.date));
+  const rows = Object.entries(DB.handovers).filter(([k])=>k.startsWith(month)).map(([k,v])=>{const [date,username]=k.split('::'); return {date,username,...v};}).filter(r=>isManagementRole(req.user.role)||r.username===req.user.username).sort((a,b)=>a.date.localeCompare(b.date));
   res.json({ rows });
 });
 
@@ -540,32 +564,33 @@ async function boot() {
     await save(DB);
   } else {
     let changed = false;
-    DB.locations = Array.isArray(DB.locations) && DB.locations.length ? DB.locations : [
-      {id:'nmdc-main', name:'NMDC – Main Branch'},
-      {id:'nmdc-ayesha', name:'NMDC – Ayesha Manzil'},
-      {id:'nmdc-alkhair', name:'NMDC – AL-Khair'},
-      {id:'nmdc-orangi', name:'NMDC – Orangi Town'},
-      {id:'prime-lab', name:'Prime Lab'}
-    ]; changed = true;
+    if (!Array.isArray(DB.locations) || !DB.locations.length) {
+      DB.locations = [
+        {id:'nmdc-main', name:'NMDC – Main Branch'},
+        {id:'nmdc-ayesha', name:'NMDC – Ayesha Manzil'},
+        {id:'nmdc-alkhair', name:'NMDC – AL-Khair'},
+        {id:'nmdc-orangi', name:'NMDC – Orangi Town'},
+        {id:'prime-lab', name:'Prime Lab'}
+      ]; changed = true;
+    }
     DB.onlineAmounts = DB.onlineAmounts || {};
+    DB.manualRefunds = DB.manualRefunds || {};
     DB.patientCounts = DB.patientCounts || {};
     DB.handovers = DB.handovers || {};
+    DB.customLists = Array.isArray(DB.customLists) ? DB.customLists : [];
+    if (!Array.isArray(DB.categories)) { DB.categories = defaultData().categories; changed = true; }
     DB.categories = (DB.categories || []).map(c => c.locationId === undefined ? {...c, locationId:'nmdc-main'} : c);
     DB.users = (DB.users || []).map(u => {
       const x = {...u};
       if (x.id === 'admin' || x.username === 'admin') x.role='admin';
-      if (x.role !== 'admin' && !x.locationId) x.locationId='nmdc-main';
+      if (x.role !== 'admin' && x.role !== 'reviewer' && !x.locationId) x.locationId='nmdc-main';
+      if (x.role === 'reviewer') x.locationId=null;
       return x;
     });
     DB.entries = DB.entries || {};
-    const hasEntries = Object.values(DB.entries).some(arr => Array.isArray(arr) && arr.length);
-    if (!hasEntries) {
-      DB.categories = defaultData().categories;
-      DB.employees = DB.employees || [];
-      DB.vendors = DB.vendors || [];
-      DB.doctors = DB.doctors || [];
-      changed = true;
-    }
+    DB.employees = Array.isArray(DB.employees) ? DB.employees : [];
+    DB.vendors = Array.isArray(DB.vendors) ? DB.vendors : [];
+    DB.doctors = Array.isArray(DB.doctors) ? DB.doctors : [];
     Object.keys(DB.entries).forEach(m => { DB.entries[m] = (DB.entries[m]||[]).map(e => e.locationId ? e : {...e, locationId:'nmdc-main'}); });
     if (changed) await save(DB);
   }

@@ -68,6 +68,7 @@ function defaultData() {
     employees: [],
     vendors: [],
     doctors: [],
+    customLists: [], // user-created reusable lists for category dropdowns
     onlineAmounts: {},
     manualRefunds: {},
     patientCounts: {},
