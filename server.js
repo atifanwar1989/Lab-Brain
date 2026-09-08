@@ -197,6 +197,9 @@ function resolveWriteLocation(req, requestedLocationId) {
     return { locationId: requested };
   }
   if (userLoc && (DB.locations || []).some(l => l.id === userLoc)) return { locationId: userLoc };
+  // Management users normally work with an explicitly selected branch. If there
+  // is only one configured branch, it is safe to use it automatically.
+  if (isManagementRole(req.user.role) && (DB.locations || []).length === 1) return { locationId: DB.locations[0].id };
   return { locationId: null };
 }
 function categoryAllowed(catId, locationId) {
@@ -295,7 +298,10 @@ app.get('/api/special-entries', auth, (req,res)=>{
   const legacyRefund=username==='all'?0:Object.entries(DB.manualRefunds||{}).filter(([k])=>k===date+'::'+username).reduce((a,[,v])=>a+Number(v||0),0);
   const online=specialDateRows(DB.onlineEntries,date,username,locationId);
   const refunds=specialDateRows(DB.manualRefundEntries,date,username,locationId);
-  const ameenUsername=isManagementRole(req.user.role)?username:'all';
+  // Ameen bookings affect the cash portfolio of the user who made the booking.
+  // Staff may still receive another user's pending due, so pending lookup is kept
+  // location-wide in /api/ameen/pending; the daily summary/entry list is user-scoped.
+  const ameenUsername=isManagementRole(req.user.role)?username:req.user.username;
   const bookings=specialDateRows(DB.ameenEntries,date,ameenUsername,locationId).filter(r=>canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));
   const payments=ameenPaymentRows(date,date,ameenUsername,locationId).filter(p=>isManagementRole(req.user.role)||p.locationId===locationId);
   res.json({onlineEntries:online,manualRefundEntries:refunds,ameenEntries:bookings,ameenPayments:payments,legacyOnline,legacyRefund});
@@ -336,6 +342,17 @@ app.post('/api/ameen/:id/payment',auth,async(req,res)=>{
   const {date,amount,note}=req.body||{};if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Payment date and valid amount are required.'});if(!canEditDate(req,date))return res.status(403).json({error:'You cannot add a payment for this date now.'});let rec=null;for(const r of allAmeenBookings())if(r.id===req.params.id){rec=r;break}if(!rec)return res.status(404).json({error:'Ameen due not found.'});if(!canViewAmeen(req,rec))return res.status(403).json({error:'This Ameen due is not available for your location.'});const pending=ameenPending(rec);if(Number(amount)>pending)return res.status(400).json({error:`Payment exceeds pending due of Rs ${pending.toLocaleString('en-PK')}.`});const loc=isManagementRole(req.user.role)?(rec.locationId||null):userLocation(req);rec.payments=rec.payments||[];rec.payments.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),ts:Date.now()});try{await persist();res.json({ok:true,remaining:ameenPending(rec)})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
 });
 app.delete('/api/ameen/:id',auth,async(req,res)=>{const month=req.query.month,arr=DB.ameenEntries[month]||[],i=arr.findIndex(x=>x.id===req.params.id);if(i<0)return res.status(404).json({error:'Not found'});const r=arr[i];if(!isManagementRole(req.user.role)&&r.username!==req.user.username)return res.status(403).json({error:'You can only remove your own Ameen booking'});if(!canEditDate(req,r.date))return res.status(403).json({error:'You cannot edit this date now.'});if((r.payments||[]).length)return res.status(400).json({error:'Ameen booking with payments cannot be removed.'});arr.splice(i,1);if(!arr.length)delete DB.ameenEntries[month];try{await persist();res.json({ok:true})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}});
+app.delete('/api/ameen/:id/payment/:paymentId',auth,async(req,res)=>{
+  let rec=null; for(const r of allAmeenBookings()) if(r.id===req.params.id){rec=r;break}
+  if(!rec) return res.status(404).json({error:'Ameen due not found.'});
+  const payments=rec.payments||[]; const idx=payments.findIndex(p=>p.id===req.params.paymentId);
+  if(idx<0) return res.status(404).json({error:'Payment not found.'});
+  const pay=payments[idx];
+  if(!isManagementRole(req.user.role) && pay.username!==req.user.username) return res.status(403).json({error:'You can only remove your own Ameen receipt.'});
+  if(!canEditDate(req,pay.date)) return res.status(403).json({error:'You cannot edit this payment date now.'});
+  payments.splice(idx,1); rec.payments=payments;
+  try{await persist();res.json({ok:true,remaining:ameenPending(rec)})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
+});
 
 app.get('/api/online', auth, (req, res) => {
   const date = req.query.date;
@@ -400,7 +417,12 @@ function daySummary(date, username, locationId) {
   entries.forEach(e=>{ const c=(DB.categories||[]).find(c=>c.id===e.catId); if(c && c.type==='income') income += Number(e.amount||0); else expense += Number(e.amount||0); });
   const online = Number((DB.onlineAmounts||{})[date+'::'+username] || 0);
   const manualRefund = Number((DB.manualRefunds||{})[date+'::'+username] || 0);
-  return { income, expense, online, manualRefund, calculated: income - online - manualRefund - expense };
+  const ameenBookings = allAmeenBookings().filter(r => r.date === date && r.username === username && (!locationId || r.locationId === locationId));
+  const ameenPending = ameenBookings.reduce((a,r)=>a+Math.max(0,Number(r.amount||0)-ameenPaidTotal(r)),0);
+  // Ameen receipts belong to the user who physically received the payment on this date,
+  // not to the user who originally booked the due.
+  const ameenReceived = allAmeenBookings().reduce((sum,r)=>sum+(r.payments||[]).filter(p=>p.date===date&&p.username===username&&(!locationId||p.locationId===locationId)).reduce((a,p)=>a+Number(p.amount||0),0),0);
+  return { income, expense, online, manualRefund, ameenPending, ameenReceived, calculated: income - online - manualRefund - expense - ameenPending + ameenReceived };
 }
 app.get('/api/handover', auth, (req, res) => {
   const date = req.query.date;
@@ -417,7 +439,7 @@ app.post('/api/handover', auth, async (req, res) => {
   const s = daySummary(date, username, locationId);
   const short = Number(cashShort||0), excess = Number(excessCash||0);
   const actual = s.calculated - short + excess;
-  DB.handovers[hkey(date, username)] = { calculated:s.calculated, counted:actual, cashShort:short, excessCash:excess, online:s.online, manualRefund:s.manualRefund, income:s.income, expense:s.expense, locationId, remark: remark || '', closedAt:Date.now() };
+  DB.handovers[hkey(date, username)] = { calculated:s.calculated, counted:actual, cashShort:short, excessCash:excess, online:s.online, manualRefund:s.manualRefund, ameenPending:s.ameenPending||0, ameenReceived:s.ameenReceived||0, income:s.income, expense:s.expense, locationId, remark: remark || '', closedAt:Date.now() };
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
@@ -627,8 +649,15 @@ app.get('/api/management-summary', auth, (req, res) => {
   }
   const onlineEntries=[]; for(const month of Object.keys(DB.onlineEntries||{})) for(const r of (DB.onlineEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;onlineEntries.push(r);}
   const manualRefundEntries=[]; for(const month of Object.keys(DB.manualRefundEntries||{})) for(const r of (DB.manualRefundEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;manualRefundEntries.push(r);}
-  const ameenBookings=[]; for(const r of allAmeenBookings()){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.locationId!==userLocation(req))continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;ameenBookings.push({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)});}
-  const ameenPayments=ameenPaymentRows(from,to,username,locationId).filter(p=>isManagementRole(req.user.role)||p.locationId===userLocation(req));
+  const ameenBookings=[]; for(const r of allAmeenBookings()){
+    if(r.date<from||r.date>to)continue;
+    if(!isManagementRole(req.user.role) && (r.username!==req.user.username || r.locationId!==userLocation(req)))continue;
+    if(username&&username!=='all'&&r.username!==username)continue;
+    if(locationId&&r.locationId!==locationId)continue;
+    ameenBookings.push({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)});
+  }
+  const ameenPaymentUsername=isManagementRole(req.user.role)?username:req.user.username;
+  const ameenPayments=ameenPaymentRows(from,to,ameenPaymentUsername,locationId).filter(p=>isManagementRole(req.user.role)||p.username===req.user.username);
   const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(isManagementRole(req.user.role)||h.username===req.user.username)&&(username===null||h.username===username)&&(locationId===null||h.locationId===locationId));
   res.json({entries:rows, online, manualRefunds, patients, handovers, onlineEntries, manualRefundEntries, ameenBookings, ameenPayments});
 });

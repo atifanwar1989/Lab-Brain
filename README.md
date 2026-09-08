@@ -1,35 +1,22 @@
 # Lab-Brain
 
-Daily cash management and management reporting app for NMDC.
+## V25
 
-## Data safety
-- Records are stored in Supabase Postgres, not Render's local filesystem.
-- Before every normal data save, Lab-Brain keeps an automatic snapshot of the previous main data state (up to 30 snapshots).
-- Admin can download a complete JSON backup from Reports → Data Safety & Demo.
-- Admin can view automatic backup history and restore a previous snapshot. The current state is snapshotted before restore.
-- Demo data (for report testing) is explicitly tracked and can be removed without targeting real records.
+V25 is based on V24 and preserves the existing application structure and Supabase `app_state` data model.
 
-## Reports
-- Revenue, Cash Counter Expenses, Patient Count cards.
-- Daily analysis and completed-month trends.
-- Excel-compatible CSV export for the selected report filters.
-- PDF / Print uses the browser print dialog; choose "Save as PDF".
+### Ameen accounting and workflow
+- Ameen Booking / Due is **not included in Total Revenue**.
+- On the booking date, the booking amount is deducted from Expected Cash because no physical cash was received.
+- Ameen Receipt is a separate cash-receipt action and is not new revenue.
+- Ameen receipts are linked to an existing pending due.
+- Partial payments are supported; only the remaining balance stays pending.
+- Ameen cash impact is portfolio/user-specific: a booking affects the booking user's cash calculation; a later receipt affects the user who physically receives it.
+- Ameen receipt removal is supported under the normal date/ownership rules and restores the linked due balance.
 
-## Demo data (for report testing)
-Admin → Reports → Data Safety & Demo → Load Demo Data.
-The demo set uses the current month, days 1–7 when available, and is separately tracked. Use Remove Demo Data to remove only that set.
-
-
-## V16 UI
-Modern responsive dashboard UI refresh. Business logic, calculations, permissions, APIs and existing data model are preserved. Branding switches between NMDC and Prime Lab based on the selected/staff location.
-
-
-## V24 changes
-- Fixed entry deletion permissions and date-window behavior.
-- Fixed entry popup Add/Add More/Cancel behavior and immediate UI updates.
-- Added Online detailed entries.
-- Added Manual Refund detailed entries.
-- Added Ameen Booking/Due and Ameen Receipt/Payment workflow.
-- Added automatic location resolution for special entries.
-- Added Ameen receipt card under Income.
-- Existing Supabase data is preserved.
+### Other preserved behavior
+- Admin/Reviewer management access and Admin settings remain.
+- Staff previous-date correction window remains 00:00–00:30 Pakistan time.
+- Admin is not date/time restricted for entry add/remove.
+- Online and Manual Refund remain individual persistent entries.
+- Existing category/location/custom-list functionality is preserved.
+- Existing Supabase data is not reset by the application update.
