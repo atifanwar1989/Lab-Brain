@@ -4,6 +4,7 @@
 // that survives redeploys and restarts (unlike a JSON file on Render's free disk).
 const { Pool } = require('pg');
 const crypto = require('crypto');
+let saveCount = 0;
 
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is not set. Add it in your hosting provider\'s environment variables (see README.md).');
@@ -16,14 +17,31 @@ const pool = new Pool({
     : { rejectUnauthorized: false }
 });
 
+let tablesReady = null;
+
 async function ensureTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS app_state (
-      key TEXT PRIMARY KEY,
-      value JSONB NOT NULL,
-      updated_at TIMESTAMPTZ DEFAULT now()
-    )
-  `);
+  if (!tablesReady) {
+    tablesReady = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS app_state (
+          key TEXT PRIMARY KEY,
+          value JSONB NOT NULL,
+          updated_at TIMESTAMPTZ DEFAULT now()
+        )
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS app_state_backups (
+          id BIGSERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          value JSONB NOT NULL
+        )
+      `);
+    })().catch(err => {
+      tablesReady = null;
+      throw err;
+    });
+  }
+  await tablesReady;
 }
 
 function defaultLocations() {
@@ -89,31 +107,42 @@ async function load() {
 
 async function save(data) {
   await ensureTable();
-  // Automatic safety snapshot before every normal data write. Keep the most
-  // recent 30 snapshots so an accidental change can be rolled back.
-  const current = await pool.query('SELECT value FROM app_state WHERE key=$1', ['main']);
-  if (current.rows[0] && current.rows[0].value) {
-    await pool.query(`CREATE TABLE IF NOT EXISTS app_state_backups (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now(), value JSONB NOT NULL)`);
-    await pool.query('INSERT INTO app_state_backups(value) VALUES($1::jsonb)', [JSON.stringify(current.rows[0].value)]);
-    await pool.query(`DELETE FROM app_state_backups WHERE id NOT IN (SELECT id FROM app_state_backups ORDER BY id DESC LIMIT 30)`);
+  // Keep the durable main write and the pre-change safety snapshot in one
+  // database round-trip. The client still waits for this confirmed Postgres
+  // write before the API reports success, so UI updates never depend on an
+  // unsafe fire-and-forget background save.
+  await pool.query(`
+    WITH previous AS (
+      SELECT value FROM app_state WHERE key='main'
+    ), upsert AS (
+      INSERT INTO app_state(key, value, updated_at)
+      VALUES ('main', $1::jsonb, now())
+      ON CONFLICT (key) DO UPDATE
+        SET value = EXCLUDED.value, updated_at = now()
+      RETURNING key
+    )
+    INSERT INTO app_state_backups(value)
+    SELECT value FROM previous
+  `, [JSON.stringify(data)]);
+
+  // Backup trimming is non-critical to the just-confirmed main write.
+  // Do it occasionally so ordinary entries do not pay the extra round-trip.
+  saveCount += 1;
+  if (saveCount % 20 === 0) {
+    pool.query(`DELETE FROM app_state_backups WHERE id NOT IN (SELECT id FROM app_state_backups ORDER BY id DESC LIMIT 30)`)
+      .catch(err => console.error('Backup cleanup failed:', err.message));
   }
-  await pool.query(
-    `INSERT INTO app_state(key, value, updated_at) VALUES ('main', $1::jsonb, now())
-     ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = now()`,
-    [JSON.stringify(data)]
-  );
 }
+
 
 async function listBackups() {
   await ensureTable();
-  await pool.query(`CREATE TABLE IF NOT EXISTS app_state_backups (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now(), value JSONB NOT NULL)`);
   const { rows } = await pool.query('SELECT id, created_at FROM app_state_backups ORDER BY id DESC LIMIT 30');
   return rows;
 }
 
 async function getBackup(id) {
   await ensureTable();
-  await pool.query(`CREATE TABLE IF NOT EXISTS app_state_backups (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now(), value JSONB NOT NULL)`);
   const { rows } = await pool.query('SELECT id, created_at, value FROM app_state_backups WHERE id=$1', [id]);
   return rows[0] || null;
 }

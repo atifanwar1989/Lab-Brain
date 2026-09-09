@@ -33,3 +33,11 @@ It does NOT clear:
 - custom lists
 
 A database migration flag prevents the cleanup from repeating on normal restarts.
+
+
+## V28 performance and save reliability
+- Normal entries remain silent after a successful save; the UI updates only after the server confirms the durable Postgres write.
+- Entry-save failures show a specific "Not saved" indication.
+- Cash handover shows a green "Saved ✓" confirmation after the durable save is confirmed.
+- The Postgres persistence path was optimized to perform the main write and pre-change safety snapshot in one database round-trip; backup trimming is deferred/occasional and never blocks the confirmed main write.
+- No card layout, settings model, category/location model, or existing business functionality was intentionally changed.
