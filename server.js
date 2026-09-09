@@ -408,12 +408,26 @@ app.put('/api/manual-refund', auth, async (req, res) => {
   try { await persist(); res.json({ ok: true, amount: Number(amount) }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
+function patientCountFor(date, username) {
+  const map = DB.patientCounts || {};
+  const exactKey = date + '::' + username;
+  if (Object.prototype.hasOwnProperty.call(map, exactKey)) return Number(map[exactKey] || 0);
+  // Be tolerant of legacy/case-variant usernames so management can still
+  // retrieve an existing staff patient's count after username casing changes.
+  const wanted = String(username || '').trim().toLowerCase();
+  if (!wanted) return 0;
+  for (const [key, value] of Object.entries(map)) {
+    const sep = key.indexOf('::');
+    if (sep < 0 || key.slice(0, sep) !== date) continue;
+    if (key.slice(sep + 2).trim().toLowerCase() === wanted) return Number(value || 0);
+  }
+  return 0;
+}
 app.get('/api/patients', auth, (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
   const username = isManagementRole(req.user.role) && req.query.username ? req.query.username : req.user.username;
-  const key = date + '::' + username;
-  res.json({ count: Number((DB.patientCounts || {})[key] || 0) });
+  res.json({ count: patientCountFor(date, username) });
 });
 app.put('/api/patients', auth, async (req, res) => {
   const { date, count } = req.body || {};

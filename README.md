@@ -1,4 +1,4 @@
-# Lab-Brain V34
+# Lab-Brain V35
 
 V26 is based on V25 and preserves the existing configuration model and business features.
 
@@ -48,3 +48,10 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Print Summary now places Daily Summary and Cash Handover side-by-side, followed by My Entries, with compact print styling intended to fit a single A4 page and remain suitable for A3 printing.
 - Management Reports no longer show Staff Performance or Cash Mismatch/Handover history by default; both are available as optional detailed reports with a selectable From/To date range.
 - Individual Entry Management now uses Location-wise and Category-wise filters before displaying entries.
+
+
+## V35 bug fixes
+- Admin-selected Staff patient counts can now be viewed and corrected when a specific Staff user is selected; the Patient Count control remains intentionally unavailable when All users is selected because there is no single count to edit.
+- Patient count retrieval tolerates legacy/case-variant username keys.
+- Monthly trend bars now preserve proportional heights instead of flex-shrinking to nearly equal heights when values differ.
+- Admin correction authority remains based on the logged-in Admin role, not the selected Staff account.
