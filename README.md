@@ -1,4 +1,4 @@
-# Lab-Brain V35
+# Lab-Brain V36
 
 V26 is based on V25 and preserves the existing configuration model and business features.
 
@@ -50,8 +50,15 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Individual Entry Management now uses Location-wise and Category-wise filters before displaying entries.
 
 
-## V35 bug fixes
+## V36 bug fixes
 - Admin-selected Staff patient counts can now be viewed and corrected when a specific Staff user is selected; the Patient Count control remains intentionally unavailable when All users is selected because there is no single count to edit.
 - Patient count retrieval tolerates legacy/case-variant username keys.
 - Monthly trend bars now preserve proportional heights instead of flex-shrinking to nearly equal heights when values differ.
 - Admin correction authority remains based on the logged-in Admin role, not the selected Staff account.
+
+
+## V36 Changes
+- Report chart value labels are rendered inside the chart bars/plot area.
+- Revenue chart labels use compact K notation (e.g. 200K, 301.5K); expense labels retain full Rs values; patient labels retain whole-number counts.
+- Normal entry, Online, Manual Refund, Ameen Booking, and Patient Count UI updates are optimistic for immediate feedback, with confirmed server persistence and rollback/error feedback if the durable save fails.
+- Cash handover shows the green Saved ✓ confirmation after a confirmed save.
