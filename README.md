@@ -1,4 +1,4 @@
-# Lab-Brain V26
+# Lab-Brain V34
 
 V26 is based on V25 and preserves the existing configuration model and business features.
 
@@ -41,3 +41,10 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Cash handover shows a green "Saved ✓" confirmation after the durable save is confirmed.
 - The Postgres persistence path was optimized to perform the main write and pre-change safety snapshot in one database round-trip; backup trimming is deferred/occasional and never blocks the confirmed main write.
 - No card layout, settings model, category/location model, or existing business functionality was intentionally changed.
+
+
+## V34 developments
+- My Entries now shows the selected linked-list person/item under the Category (for example, Advance — employee name or Vendor — vendor name), while Who / Vendor continues to identify who entered the record.
+- Print Summary now places Daily Summary and Cash Handover side-by-side, followed by My Entries, with compact print styling intended to fit a single A4 page and remain suitable for A3 printing.
+- Management Reports no longer show Staff Performance or Cash Mismatch/Handover history by default; both are available as optional detailed reports with a selectable From/To date range.
+- Individual Entry Management now uses Location-wise and Category-wise filters before displaying entries.
