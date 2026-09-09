@@ -444,7 +444,14 @@ function daySummary(date, username, locationId) {
   // Ameen receipts belong to the user who physically received the payment on this date,
   // not to the user who originally booked the due.
   const ameenReceived = allAmeenBookings().reduce((sum,r)=>sum+(r.payments||[]).filter(p=>p.date===date&&p.username===username&&(!locationId||p.locationId===locationId)).reduce((a,p)=>a+Number(p.amount||0),0),0);
-  return { income, expense, online, manualRefund, ameenPending, ameenReceived, calculated: income - online - manualRefund - expense - ameenPending + ameenReceived };
+  // If the same user both books the Ameen due and receives its payment on the same date,
+  // show both the pending deduction and received addition in the ledger, but neutralize
+  // that same-shift in/out from Expected Cash. A payment received by a different user
+  // remains a genuine cash addition for the receiving user's counter.
+  const sameUserSameDayReceived = ameenBookings.reduce((sum,r)=>sum+(r.payments||[])
+    .filter(p=>p.date===date&&p.username===r.username&&(!locationId||p.locationId===locationId))
+    .reduce((a,p)=>a+Number(p.amount||0),0),0);
+  return { income, expense, online, manualRefund, ameenPending, ameenReceived, sameUserSameDayReceived, calculated: income - online - manualRefund - expense - ameenPending + ameenReceived - sameUserSameDayReceived };
 }
 app.get('/api/handover', auth, (req, res) => {
   const date = req.query.date;
