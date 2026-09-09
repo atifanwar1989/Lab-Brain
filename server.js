@@ -60,7 +60,8 @@ app.use(ready);
 // ---------------- Auth ----------------
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
-  const user = DB.users.find(u => u.username === username);
+  const loginUsername = String(username || '').trim().toLowerCase();
+  const user = DB.users.find(u => String(u.username || '').trim().toLowerCase() === loginUsername);
   if (!user || !bcrypt.compareSync(password || '', user.passwordHash || '')) {
     return res.status(401).json({ error: 'Wrong username or password' });
   }
