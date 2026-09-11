@@ -62,3 +62,9 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Revenue chart labels use compact K notation (e.g. 200K, 301.5K); expense labels retain full Rs values; patient labels retain whole-number counts.
 - Normal entry, Online, Manual Refund, Ameen Booking, and Patient Count UI updates are optimistic for immediate feedback, with confirmed server persistence and rollback/error feedback if the durable save fails.
 - Cash handover shows the green Saved ✓ confirmation after a confirmed save.
+
+## V38 developments
+- Management Reports keep the existing full-month view as the default and add an optional Specific date mode. Selecting a specific date filters the management report, CSV export, and Individual Entry Management to that single date; existing month reporting remains unchanged.
+- Patient Count entry popup no longer pre-fills `0`; the field starts blank so a value such as 10 is entered exactly as 10. A saved zero remains a valid explicit patient count.
+- Close Handover now requires an explicitly saved Patient Count first. If the count has not been entered for the day, the system opens a centered "Enter Patient Count" popup and will not close the handover until the user saves a valid whole-number count, including 0 when applicable.
+- No transactional data, users, locations, categories, employees, vendors, doctors, custom lists, or existing configuration is cleared or reset by these changes.

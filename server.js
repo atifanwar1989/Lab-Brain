@@ -427,7 +427,9 @@ app.get('/api/patients', auth, (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
   const username = isManagementRole(req.user.role) && req.query.username ? req.query.username : req.user.username;
-  res.json({ count: patientCountFor(date, username) });
+  const key = date + '::' + username;
+  const hasCount = Object.prototype.hasOwnProperty.call(DB.patientCounts || {}, key) || Object.keys(DB.patientCounts || {}).some(k => { const sep=k.indexOf('::'); return sep>=0 && k.slice(0,sep)===date && k.slice(sep+2).trim().toLowerCase()===String(username).trim().toLowerCase(); });
+  res.json({ count: patientCountFor(date, username), hasCount });
 });
 app.put('/api/patients', auth, async (req, res) => {
   const { date, count } = req.body || {};
