@@ -331,7 +331,7 @@ app.get('/api/special-entries', auth, (req,res)=>{
   const ameenUsername=isManagementRole(req.user.role)?username:req.user.username;
   const bookings=specialDateRows(DB.ameenEntries,date,ameenUsername,locationId).filter(r=>canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));
   const payments=ameenPaymentRows(date,date,ameenUsername,locationId).filter(p=>isManagementRole(req.user.role)||p.locationId===locationId);
-  const genericCards=(DB.specialCards||[]).filter(c=>c.behavior==='generic_due_receipt'&&c.active!==false); const genericEntries={}; for(const card of genericCards){ genericEntries[card.id]=allGenericSpecialBookings(card.id).filter(r=>r.date===date&&(username==='all'||!username||r.username===username)&&(locationId==='all'||!locationId||r.locationId===locationId)&&specialCardAllowed(req,card,r.locationId)).map(r=>({...r,paid:genericPaidTotal(r),pending:genericPending(r)})); } res.json({onlineEntries:online,manualRefundEntries:refunds,ameenEntries:bookings,ameenPayments:payments,genericSpecialEntries:genericEntries,legacyOnline,legacyRefund});
+  const genericCards=(DB.specialCards||[]).filter(c=>c.behavior==='generic_due_receipt'&&c.active!==false); const genericEntries={},genericPayments={}; for(const card of genericCards){ const allowedRows=allGenericSpecialBookings(card.id).filter(r=>(username==='all'||!username||r.username===username)&&(locationId==='all'||!locationId||r.locationId===locationId)&&specialCardAllowed(req,card,r.locationId)); genericEntries[card.id]=allowedRows.filter(r=>r.date===date).map(r=>({...r,paid:genericPaidTotal(r),pending:genericPending(r)})); genericPayments[card.id]=allowedRows.flatMap(r=>(r.payments||[]).filter(p=>p.date===date).map(p=>({...p,bookingId:r.id,bookingDate:r.date,bookingAmount:r.amount,bookingNote:r.note||'',cardId:card.id}))); } res.json({onlineEntries:online,manualRefundEntries:refunds,ameenEntries:bookings,ameenPayments:payments,genericSpecialEntries:genericEntries,genericSpecialPayments:genericPayments,legacyOnline,legacyRefund});
 });
 app.post('/api/online-entry', auth, async (req,res)=>{
   const {date,amount,note,transferor,locationId}=req.body||{};
@@ -705,22 +705,28 @@ app.post('/api/demo-data/remove', auth, adminOnly, async (req,res) => {
     res.json({ok:true,message:`Demo data removed: ${removedEntries} entries, ${removedOnline} online amounts, ${removedPatients} patient counts and ${removedHandovers} handovers.`});
   } catch(e) { console.error(e); res.status(500).json({error:'Could not remove demo data.'}); }
 });
+function requestedLocationIds(req){
+  const raw=String(req.query.locationIds||'').split(',').map(x=>x.trim()).filter(Boolean);
+  if(raw.length) return new Set(raw);
+  const single=req.query.locationId&&req.query.locationId!=='all'?String(req.query.locationId):null;
+  return single?new Set([single]):null;
+}
 app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
   try{
-    const from=req.query.from,to=req.query.to,locationId=req.query.locationId&&req.query.locationId!=='all'?req.query.locationId:null,username=req.query.username&&req.query.username!=='all'?req.query.username:null;
+    const from=req.query.from,to=req.query.to,locationIds=requestedLocationIds(req),username=req.query.username&&req.query.username!=='all'?req.query.username:null;
     if(!from||!to)return res.status(400).send('from and to are required');
     const esc=v=>`"${String(v??'').replace(/"/g,'""')}"`;
     const lines=[['Date','Staff','Location','Type','Category','Person/Vendor','Amount','Remarks'].map(esc).join(',')];
     for(const month of Object.keys(DB.entries||{})) for(const e of (DB.entries[month]||[])){
-      if(e.date<from||e.date>to||(username&&e.username!==username)||(locationId&&e.locationId!==locationId))continue;
+      if(e.date<from||e.date>to||(username&&e.username!==username)||(locationIds&&!locationIds.has(e.locationId)))continue;
       const c=(DB.categories||[]).find(c=>c.id===e.catId);const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);
       lines.push([e.date,u?.name||e.username,l?.name||e.locationId,c?.type||'',c?.name||e.catId,e.person||'',Number(e.amount||0),e.note||''].map(esc).join(','));
     }
-    for(const [key,amount] of Object.entries(DB.manualRefunds||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=u&&u.locationId?(DB.locations||[]).find(l=>l.id===u.locationId):null;if(locationId&&(!u||u.locationId!==locationId))continue;lines.push([date,u?.name||user,l?.name||u?.locationId||'','manual refund','Manual Refund','',Number(amount||0),''].map(esc).join(','));}
-    for(const month of Object.keys(DB.onlineEntries||{})) for(const e of (DB.onlineEntries[month]||[])){if(e.date<from||e.date>to||(username&&e.username!==username)||(locationId&&e.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);lines.push([e.date,u?.name||e.username,l?.name||e.locationId,'online','Online',e.transferor||'',Number(e.amount||0),e.note||''].map(esc).join(','));}
-    for(const month of Object.keys(DB.manualRefundEntries||{})) for(const e of (DB.manualRefundEntries[month]||[])){if(e.date<from||e.date>to||(username&&e.username!==username)||(locationId&&e.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);lines.push([e.date,u?.name||e.username,l?.name||e.locationId,'manual refund','Manual Refund',e.patientName||'',Number(e.amount||0),[e.labNo,e.note].filter(Boolean).join(' | ')].map(esc).join(','));}
-    for(const r of allAmeenBookings()){if(r.date<from||r.date>to||(username&&r.username!==username)||(locationId&&r.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===r.username);const l=(DB.locations||[]).find(l=>l.id===r.locationId);lines.push([r.date,u?.name||r.username,l?.name||r.locationId,'ameen','Ameen','',Number(r.amount||0),r.note||''].map(esc).join(','));for(const pay of (r.payments||[])){if(pay.date<from||pay.date>to||(username&&pay.username!==username)||(locationId&&pay.locationId!==locationId))continue;const pu=(DB.users||[]).find(u=>u.username===pay.username);const pl=(DB.locations||[]).find(l=>l.id===pay.locationId);lines.push([pay.date,pu?.name||pay.username,pl?.name||pay.locationId,'ameen payment','Ameen Payment','',Number(pay.amount||0),`Against ${r.date}; ${pay.note||''}`].map(esc).join(','));}}
-    for(const [key,h] of Object.entries(DB.handovers||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username)||(locationId&&h.locationId!==locationId))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=(DB.locations||[]).find(l=>l.id===h.locationId);lines.push([date,u?.name||user,l?.name||h.locationId,'handover','Expected Cash / Short / Excess','',Number(h.calculated||0),`Short=${Number(h.cashShort||0)}; Excess=${Number(h.excessCash||0)}; ${h.remark||''}`].map(esc).join(','));}
+    for(const [key,amount] of Object.entries(DB.manualRefunds||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=u&&u.locationId?(DB.locations||[]).find(l=>l.id===u.locationId):null;if(locationIds&&(!u||!locationIds.has(u.locationId)))continue;lines.push([date,u?.name||user,l?.name||u?.locationId||'','manual refund','Manual Refund','',Number(amount||0),''].map(esc).join(','));}
+    for(const month of Object.keys(DB.onlineEntries||{})) for(const e of (DB.onlineEntries[month]||[])){if(e.date<from||e.date>to||(username&&e.username!==username)||(locationIds&&!locationIds.has(e.locationId)))continue;const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);lines.push([e.date,u?.name||e.username,l?.name||e.locationId,'online','Online',e.transferor||'',Number(e.amount||0),e.note||''].map(esc).join(','));}
+    for(const month of Object.keys(DB.manualRefundEntries||{})) for(const e of (DB.manualRefundEntries[month]||[])){if(e.date<from||e.date>to||(username&&e.username!==username)||(locationIds&&!locationIds.has(e.locationId)))continue;const u=(DB.users||[]).find(u=>u.username===e.username);const l=(DB.locations||[]).find(l=>l.id===e.locationId);lines.push([e.date,u?.name||e.username,l?.name||e.locationId,'manual refund','Manual Refund',e.patientName||'',Number(e.amount||0),[e.labNo,e.note].filter(Boolean).join(' | ')].map(esc).join(','));}
+    for(const r of allAmeenBookings()){if(r.date<from||r.date>to||(username&&r.username!==username)||(locationIds&&!locationIds.has(r.locationId)))continue;const u=(DB.users||[]).find(u=>u.username===r.username);const l=(DB.locations||[]).find(l=>l.id===r.locationId);lines.push([r.date,u?.name||r.username,l?.name||r.locationId,'ameen','Ameen','',Number(r.amount||0),r.note||''].map(esc).join(','));for(const pay of (r.payments||[])){if(pay.date<from||pay.date>to||(username&&pay.username!==username)||(locationIds&&!locationIds.has(pay.locationId)))continue;const pu=(DB.users||[]).find(u=>u.username===pay.username);const pl=(DB.locations||[]).find(l=>l.id===pay.locationId);lines.push([pay.date,pu?.name||pay.username,pl?.name||pay.locationId,'ameen payment','Ameen Payment','',Number(pay.amount||0),`Against ${r.date}; ${pay.note||''}`].map(esc).join(','));}}
+    for(const [key,h] of Object.entries(DB.handovers||{})){const [date,user]=key.split('::');if(date<from||date>to||(username&&user!==username)||(locationIds&&!locationIds.has(h.locationId)))continue;const u=(DB.users||[]).find(u=>u.username===user);const l=(DB.locations||[]).find(l=>l.id===h.locationId);lines.push([date,u?.name||user,l?.name||h.locationId,'handover','Expected Cash / Short / Excess','',Number(h.calculated||0),`Short=${Number(h.cashShort||0)}; Excess=${Number(h.excessCash||0)}; ${h.remark||''}`].map(esc).join(','));}
     res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="lab-brain-report-${from}-to-${to}.csv"`);res.send('\ufeff'+lines.join('\n'));
   }catch(e){console.error(e);res.status(500).send('Could not export report.');}
 });
@@ -728,7 +734,7 @@ app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
 app.get('/api/management-summary', auth, (req, res) => {
   const from = req.query.from, to = req.query.to;
   if (!from || !to) return res.status(400).json({ error: 'from and to are required' });
-  const locationId = req.query.locationId && req.query.locationId !== 'all' ? req.query.locationId : null;
+  const locationIds = requestedLocationIds(req);
   const username = req.query.username && req.query.username !== 'all' ? req.query.username : null;
   const rows=[];
   for(const month of Object.keys(DB.entries||{})){
@@ -736,7 +742,7 @@ app.get('/api/management-summary', auth, (req, res) => {
       if(e.date < from || e.date > to) continue;
       if(!isManagementRole(req.user.role) && e.username !== req.user.username) continue;
       if(username && e.username !== username) continue;
-      if(locationId && e.locationId !== locationId) continue;
+      if(locationIds && !locationIds.has(e.locationId)) continue;
       rows.push(e);
     }
   }
@@ -747,7 +753,7 @@ app.get('/api/management-summary', auth, (req, res) => {
     if(!isManagementRole(req.user.role) && user !== req.user.username) continue;
     if(username && user !== username) continue;
     const u=DB.users.find(x=>x.username===user);
-    if(locationId && (!u || u.locationId!==locationId)) continue;
+    if(locationIds && (!u || !locationIds.has(u.locationId))) continue;
     online.push({date,username:user,amount:Number(amount||0),locationId:u?u.locationId:null});
   }
   const manualRefunds=[];
@@ -757,7 +763,7 @@ app.get('/api/management-summary', auth, (req, res) => {
     if(!isManagementRole(req.user.role) && user !== req.user.username) continue;
     if(username && user !== username) continue;
     const u=DB.users.find(x=>x.username===user);
-    if(locationId && (!u || u.locationId!==locationId)) continue;
+    if(locationIds && (!u || !locationIds.has(u.locationId))) continue;
     manualRefunds.push({date,username:user,amount:Number(amount||0),locationId:u?u.locationId:null});
   }
   const patients=[];
@@ -767,21 +773,21 @@ app.get('/api/management-summary', auth, (req, res) => {
     if(!isManagementRole(req.user.role) && user !== req.user.username) continue;
     if(username && user !== username) continue;
     const u=DB.users.find(x=>x.username===user);
-    if(locationId && (!u || u.locationId!==locationId)) continue;
+    if(locationIds && (!u || !locationIds.has(u.locationId))) continue;
     patients.push({date,username:user,count:Number(count||0),locationId:u?u.locationId:null});
   }
-  const onlineEntries=[]; for(const month of Object.keys(DB.onlineEntries||{})) for(const r of (DB.onlineEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;onlineEntries.push(r);}
-  const manualRefundEntries=[]; for(const month of Object.keys(DB.manualRefundEntries||{})) for(const r of (DB.manualRefundEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationId&&r.locationId!==locationId)continue;manualRefundEntries.push(r);}
+  const onlineEntries=[]; for(const month of Object.keys(DB.onlineEntries||{})) for(const r of (DB.onlineEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationIds&&!locationIds.has(r.locationId))continue;onlineEntries.push(r);}
+  const manualRefundEntries=[]; for(const month of Object.keys(DB.manualRefundEntries||{})) for(const r of (DB.manualRefundEntries[month]||[])){if(r.date<from||r.date>to)continue;if(!isManagementRole(req.user.role)&&r.username!==req.user.username)continue;if(username&&r.username!==username)continue;if(locationIds&&!locationIds.has(r.locationId))continue;manualRefundEntries.push(r);}
   const ameenBookings=[]; for(const r of allAmeenBookings()){
     if(r.date<from||r.date>to)continue;
     if(!isManagementRole(req.user.role) && (r.username!==req.user.username || r.locationId!==userLocation(req)))continue;
     if(username&&username!=='all'&&r.username!==username)continue;
-    if(locationId&&r.locationId!==locationId)continue;
+    if(locationIds&&!locationIds.has(r.locationId))continue;
     ameenBookings.push({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)});
   }
   const ameenPaymentUsername=isManagementRole(req.user.role)?username:req.user.username;
-  const ameenPayments=ameenPaymentRows(from,to,ameenPaymentUsername,locationId).filter(p=>isManagementRole(req.user.role)||p.username===req.user.username);
-  const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(isManagementRole(req.user.role)||h.username===req.user.username)&&(username===null||h.username===username)&&(locationId===null||h.locationId===locationId));
+  const ameenPayments=ameenPaymentRows(from,to,ameenPaymentUsername,locationIds?Array.from(locationIds).join(','):null).filter(p=>isManagementRole(req.user.role)||p.username===req.user.username);
+  const handovers=Object.entries(DB.handovers||{}).map(([key,v])=>{const [date,user]=key.split('::'); return {date,username:user,...v};}).filter(h=>h.date>=from&&h.date<=to&&(isManagementRole(req.user.role)||h.username===req.user.username)&&(username===null||h.username===username)&&(!locationIds||locationIds.has(h.locationId)));
   res.json({entries:rows, online, manualRefunds, patients, handovers, onlineEntries, manualRefundEntries, ameenBookings, ameenPayments});
 });
 app.get('/api/handover-history', auth, (req, res) => {
