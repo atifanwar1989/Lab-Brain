@@ -68,3 +68,11 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Patient Count entry popup no longer pre-fills `0`; the field starts blank so a value such as 10 is entered exactly as 10. A saved zero remains a valid explicit patient count.
 - Close Handover now requires an explicitly saved Patient Count first. If the count has not been entered for the day, the system opens a centered "Enter Patient Count" popup and will not close the handover until the user saves a valid whole-number count, including 0 when applicable.
 - No transactional data, users, locations, categories, employees, vendors, doctors, custom lists, or existing configuration is cleared or reset by these changes.
+
+## V39 developments
+- Added a separate `Special Ledgers` page available to Staff, Reviewer and Admin without exposing Management Reports to Staff.
+- Added configurable Special Cards in Admin Settings with per-location assignment. Existing Ameen card is now controlled by the same location assignment configuration; no transactional records are cleared.
+- Added Zakaat as a generic Due/Receipt special card with the same cash treatment as Ameen: booking is not revenue, pending due reduces expected cash, and receipt increases cash without creating new revenue.
+- Added date-range Special Ledger with Due Ledger, Receiving Ledger, outstanding balances, status, and CSV download.
+- Added checkbox-based bulk receipt for multiple pending Ameen/Zakaat dues in one action while preserving individual slip/payment history.
+- Added support for future generic special cards using the same Due/Receipt and ledger model.
