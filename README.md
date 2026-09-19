@@ -102,3 +102,11 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 
 ## V46
 - Fixed Management Report multi-location checkbox logic.
+
+
+## V47
+- Fixed Management Report multi-location checkbox state handling.
+- Selecting one location now immediately clears All locations and does not retain other locations.
+- Selecting All locations clears all individual location checkboxes.
+- Unchecking the last individual location restores All locations.
+- Apply locations uses the exact selected location set on the first attempt.
