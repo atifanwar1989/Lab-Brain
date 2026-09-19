@@ -104,6 +104,15 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Fixed Management Report multi-location checkbox logic.
 
 
+## V48
+- Restructured the Admin/Reviewer **Salary & Fixed Expenses** module into separate in-module sub-tabs without changing existing finance APIs or transactional data.
+- Main tab remains **Salary & Fixed Expenses**; inside it: **Settings**, **Monthly Input / Processing**, and **Reports**.
+- Settings contains employee salary/location/department mapping and fixed expense category configuration only.
+- Monthly Input / Processing contains monthly salary processing and monthly fixed expense amounts only.
+- Reports contains the generated Revenue vs Salary & Fixed Expense department report only.
+- Existing Lab-Brain visual theme, cards, buttons, tables, colors and typography are preserved.
+- No data reset or migration of existing transactional records.
+
 ## V47
 - Fixed Management Report multi-location checkbox state handling.
 - Selecting one location now immediately clears All locations and does not retain other locations.
