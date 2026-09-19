@@ -99,7 +99,7 @@ app.get('/api/config', auth, (req, res) => {
   const staff = DB.users.map(u => ({
     id: u.id, name: u.name, username: u.username, role: u.role, locationId: u.locationId || null
   }));
-  res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], specialCards: DB.specialCards || [], staff });
+  res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], specialCards: DB.specialCards || [], staff, employeeProfiles: DB.employeeProfiles || [], fixedExpenseCategories: DB.fixedExpenseCategories || [] });
 });
 app.put('/api/config/categories', auth, adminOnly, async (req, res) => {
   DB.categories = Array.isArray(req.body.categories) ? req.body.categories : [];
@@ -132,6 +132,96 @@ app.put('/api/config/special-cards', auth, adminOnly, async (req, res) => {
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
+
+// ---------------- Employee Salary & Fixed Expense Management ----------------
+function ensureFinanceConfig() {
+  DB.employeeProfiles = Array.isArray(DB.employeeProfiles) ? DB.employeeProfiles : [];
+  DB.fixedExpenseCategories = Array.isArray(DB.fixedExpenseCategories) ? DB.fixedExpenseCategories : [];
+  DB.fixedExpenses = DB.fixedExpenses && typeof DB.fixedExpenses === 'object' ? DB.fixedExpenses : {};
+  DB.salaryRecords = DB.salaryRecords && typeof DB.salaryRecords === 'object' ? DB.salaryRecords : {};
+}
+function salaryKey(month, employee) { return `${month}::${employee}`; }
+function fixedExpenseKey(month, categoryId) { return `${month}::${categoryId}`; }
+function daysInMonthServer(month) { const [y,m]=String(month).split('-').map(Number); return new Date(y,m,0).getDate(); }
+function advanceSalaryFor(month, employee, locationId) {
+  let total=0;
+  for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
+    if(String(e.date||'').slice(0,7)!==month || String(e.person||'').trim().toLowerCase()!==String(employee||'').trim().toLowerCase()) continue;
+    if(locationId && e.locationId!==locationId) continue;
+    const c=(DB.categories||[]).find(c=>c.id===e.catId);
+    if(c && c.type==='expense' && /advance/i.test(c.name||'')) total+=Number(e.amount||0);
+  }
+  for(const mk of Object.keys(DB.manualRefundEntries||{})) { /* intentionally no salary effect */ }
+  return total;
+}
+function calculateSalary(month, profile, input={}) {
+  const basic=Number(input.basicSalary ?? profile.salary ?? 0);
+  const absentDays=Math.max(0,Number(input.absentDays||0));
+  const sickLeave=Math.max(0,Number(input.sickLeave||0));
+  const casualLeave=Math.max(0,Number(input.casualLeave||0));
+  const manualDeduction=Math.max(0,Number(input.manualDeduction||0));
+  const advance=Number(input.advanceSalary ?? advanceSalaryFor(month, profile.employee, profile.locationId));
+  const perDay=daysInMonthServer(month)?basic/daysInMonthServer(month):0;
+  const absentDeduction=absentDays*perDay;
+  const net=Math.max(0,basic-advance-absentDeduction-manualDeduction);
+  return {basicSalary:basic,advanceSalary:advance,absentDays,sickLeave,casualLeave,absentDeduction,manualDeduction,netSalary:net};
+}
+app.get('/api/finance-management', auth, managementOnly, (req,res) => {
+  ensureFinanceConfig();
+  const month=String(req.query.month||'').slice(0,7);
+  const locationId=String(req.query.locationId||'all');
+  const employees=(DB.employeeProfiles||[]).filter(p=>locationId==='all'||p.locationId===locationId);
+  const salaries=employees.map(p=>({ ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), record:DB.salaryRecords[salaryKey(month,p.employee)]||null }));
+  const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
+  const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
+  const departments=['Laboratory','X-Ray','Ultrasound'];
+  const revMap={};
+  for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
+    if(String(e.date||'').slice(0,7)!==month || String(e.locationId||'')==='') continue;
+    if(locationId!=='all' && e.locationId!==locationId) continue;
+    const c=(DB.categories||[]).find(x=>x.id===e.catId); if(!c||c.type!=='income') continue;
+    const dep=/^xray$/i.test(c.name||'')?'X-Ray':/^ultrasound$/i.test(c.name||'')?'Ultrasound':'Laboratory';
+    const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+Number(e.amount||0);
+  }
+  const salaryMap={};
+  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const val=r?Number(r.netSalary||0):0; const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+val; }
+  const fixedMap={};
+  for(const f of fixed) { const k=f.locationId+'::'+f.department; fixedMap[k]=(fixedMap[k]||0)+Number(f.amount||0); }
+  const departmentSummary=[];
+  for(const loc of (DB.locations||[])) { if(locationId!=='all'&&loc.id!==locationId) continue; const revs=departments.map(dep=>Number(revMap[loc.id+'::'+dep]||0)); const totalRev=revs.reduce((a,b)=>a+b,0); const allFixed=Number(fixedMap[loc.id+'::ALL']||0); departments.forEach((dep,idx)=>{ const directFixed=Number(fixedMap[loc.id+'::'+dep]||0); const allocatedAll=totalRev?allFixed*(revs[idx]/totalRev):0; const salary=Number(salaryMap[loc.id+'::'+dep]||0)+(Number(salaryMap[loc.id+'::ALL']||0)*(totalRev?revs[idx]/totalRev:0)); departmentSummary.push({location:loc.name,locationId:loc.id,department:dep,revenue:revs[idx],salary,fixedExpense:directFixed+allocatedAll,net:revs[idx]-salary-directFixed-allocatedAll}); }); }
+  res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, departments:['Laboratory','X-Ray','Ultrasound','ALL'], departmentSummary });
+});
+app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const incoming=Array.isArray(req.body.employeeProfiles)?req.body.employeeProfiles:[];
+  DB.employeeProfiles=incoming.map(p=>({employee:String(p.employee||'').trim(),locationId:String(p.locationId||''),department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(p.department)?p.department:'ALL',salary:Math.max(0,Number(p.salary||0)),active:p.active!==false})).filter(p=>p.employee&&p.locationId);
+  try{await persist();res.json({ok:true,employeeProfiles:DB.employeeProfiles});}catch(e){console.error(e);res.status(500).json({error:'Could not save employee profiles.'});}
+});
+app.put('/api/config/fixed-expense-categories', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const incoming=Array.isArray(req.body.fixedExpenseCategories)?req.body.fixedExpenseCategories:[];
+  DB.fixedExpenseCategories=incoming.map((c,i)=>({id:String(c.id||`fixed-${Date.now()}-${i}`),name:String(c.name||'').trim(),locationId:String(c.locationId||''),department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(c.department)?c.department:'ALL',active:c.active!==false})).filter(c=>c.name&&c.locationId);
+  try{await persist();res.json({ok:true,fixedExpenseCategories:DB.fixedExpenseCategories});}catch(e){console.error(e);res.status(500).json({error:'Could not save fixed expense categories.'});}
+});
+app.put('/api/finance-management/salary', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const month=String(req.body.month||'').slice(0,7), employee=String(req.body.employee||'').trim();
+  const profile=DB.employeeProfiles.find(p=>p.employee===employee&&p.active!==false);
+  if(!/^\d{4}-\d{2}$/.test(month)||!profile)return res.status(400).json({error:'Valid month and employee profile are required.'});
+  const calc=calculateSalary(month,profile,req.body);
+  DB.salaryRecords[salaryKey(month,employee)]={month,employee,locationId:profile.locationId,department:profile.department,...calc,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  try{await persist();res.json({ok:true,record:DB.salaryRecords[salaryKey(month,employee)]});}catch(e){console.error(e);res.status(500).json({error:'Could not save salary record.'});}
+});
+app.put('/api/finance-management/fixed-expense', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const month=String(req.body.month||'').slice(0,7), categoryId=String(req.body.categoryId||'');
+  const cat=DB.fixedExpenseCategories.find(c=>c.id===categoryId);
+  if(!/^\d{4}-\d{2}$/.test(month)||!cat)return res.status(400).json({error:'Valid month and fixed expense category are required.'});
+  const amount=Math.max(0,Number(req.body.amount||0));
+  DB.fixedExpenses[fixedExpenseKey(month,categoryId)]={month,categoryId,amount,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  try{await persist();res.json({ok:true,amount});}catch(e){console.error(e);res.status(500).json({error:'Could not save fixed expense.'});}
+});
+
 app.put('/api/config/locations', auth, adminOnly, async (req, res) => {
   DB.locations = Array.isArray(req.body.locations) ? req.body.locations : [];
   try { await persist(); res.json({ ok: true }); }
@@ -852,6 +942,10 @@ async function boot() {
     DB.handovers = DB.handovers || {};
     DB.customLists = Array.isArray(DB.customLists) ? DB.customLists : [];
     DB.specialCards = Array.isArray(DB.specialCards) ? DB.specialCards : [];
+    DB.employeeProfiles = Array.isArray(DB.employeeProfiles) ? DB.employeeProfiles : [];
+    DB.fixedExpenseCategories = Array.isArray(DB.fixedExpenseCategories) ? DB.fixedExpenseCategories : [];
+    DB.fixedExpenses = DB.fixedExpenses && typeof DB.fixedExpenses === 'object' ? DB.fixedExpenses : {};
+    DB.salaryRecords = DB.salaryRecords && typeof DB.salaryRecords === 'object' ? DB.salaryRecords : {};
     const locIds = (DB.locations || []).map(l=>l.id);
     const ensureSpecialCard = (id,name,behavior) => { let c=DB.specialCards.find(x=>x.id===id); if(!c){ c={id,name,behavior,assignedLocationIds:[...locIds],active:true}; DB.specialCards.push(c); changed=true; } else { if(!Array.isArray(c.assignedLocationIds)){c.assignedLocationIds=[...locIds];changed=true;} if(c.behavior!==behavior){c.behavior=behavior;changed=true;} } return c; };
     ensureSpecialCard('ameen','Ameen','ameen');

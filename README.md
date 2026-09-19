@@ -88,3 +88,13 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Expected Closing cards now project the full current-month closing total. The forecast cannot fall below the current month-to-date pace projection; zero/unavailable historical trend data no longer drags the closing estimate down.
 - Admin/Reviewer can view and update Cash Handover for a selected Staff account from Today. Selecting a specific Staff account loads that user's existing handover; Cash Short, Excess Cash and Mismatch Remarks can be corrected and saved. All-user management view does not show a misleading single-user handover.
 - Existing transactional data, calculations, Special Ledger, Ameen/Zakaat, user data and normal Staff handover behavior are preserved.
+
+## V44 — Employee Salary & Fixed Expense Management
+- Added a management-only Salary & Fixed Expenses page for Admin/Reviewer.
+- Existing Settings -> Employees list remains the single source for employee names.
+- Added employee profile mapping for Location, Department (Laboratory/X-Ray/Ultrasound/ALL), and monthly salary.
+- Added monthly salary processing with automatic employee-linked Advance Salary lookup, absent-day pro-rata deduction, sick/casual leave tracking, manual deduction, and net salary.
+- Added browser print / Save as PDF salary slip for each employee/month.
+- Added configurable Fixed Expense categories with Location + Department (including ALL) assignment and monthly amounts.
+- Added department-level revenue vs salary/fixed-expense allocation view; ALL-department fixed expenses are allocated by department revenue share.
+- No transactional data reset or migration was performed. Existing application data structures remain intact; new finance fields are initialized only when absent.
