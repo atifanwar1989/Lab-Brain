@@ -139,9 +139,29 @@ function ensureFinanceConfig() {
   DB.fixedExpenseCategories = Array.isArray(DB.fixedExpenseCategories) ? DB.fixedExpenseCategories : [];
   DB.fixedExpenses = DB.fixedExpenses && typeof DB.fixedExpenses === 'object' ? DB.fixedExpenses : {};
   DB.salaryRecords = DB.salaryRecords && typeof DB.salaryRecords === 'object' ? DB.salaryRecords : {};
+    DB.employeeLoans = DB.employeeLoans && typeof DB.employeeLoans === 'object' ? DB.employeeLoans : {};
+    DB.financeAdjustments = DB.financeAdjustments && typeof DB.financeAdjustments === 'object' ? DB.financeAdjustments : {};
+  DB.employeeLoans = DB.employeeLoans && typeof DB.employeeLoans === 'object' ? DB.employeeLoans : {};
+  DB.financeAdjustments = DB.financeAdjustments && typeof DB.financeAdjustments === 'object' ? DB.financeAdjustments : {};
 }
 function salaryKey(month, employee) { return `${month}::${employee}`; }
 function fixedExpenseKey(month, categoryId) { return `${month}::${categoryId}`; }
+function financeAdjustmentKey(month, locationId, type) { return `${month}::${locationId}::${type}`; }
+function loanForMonth(employee, month) {
+  const loan=DB.employeeLoans?.[employee];
+  if(!loan) return {amount:0, installment:0, remaining:0, startMonth:''};
+  const amount=Math.max(0,Number(loan.amount||0));
+  const installment=Math.max(0,Number(loan.installment||0));
+  const start=String(loan.startMonth||'').slice(0,7);
+  if(!amount || !installment || !/^\d{4}-\d{2}$/.test(start) || month<start) return {amount, installment:0, remaining:Math.max(0,amount), startMonth:start};
+  const priorMonths=[];
+  let cur=start;
+  while(cur<month && priorMonths.length<240){ priorMonths.push(cur); cur=monthAddServer(cur,1); }
+  const paid=Math.min(amount, priorMonths.length*installment);
+  const remaining=Math.max(0,amount-paid);
+  return {amount, installment:remaining>0?Math.min(installment,remaining):0, remaining, startMonth:start};
+}
+function monthAddServer(month,n){ const [y,m]=String(month).split('-').map(Number); const d=new Date(y,m-1+n,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
 function daysInMonthServer(month) { const [y,m]=String(month).split('-').map(Number); return new Date(y,m,0).getDate(); }
 function advanceSalaryFor(month, employee, locationId) {
   let total=0;
@@ -159,21 +179,27 @@ function calculateSalary(month, profile, input={}) {
   const absentDays=Math.max(0,Number(input.absentDays||0));
   const sickLeave=Math.max(0,Number(input.sickLeave||0));
   const casualLeave=Math.max(0,Number(input.casualLeave||0));
+  const annualLeave=Math.max(0,Number(input.annualLeave||0));
+  const lateDays=Math.max(0,Number(input.lateDays||0));
   const manualDeduction=Math.max(0,Number(input.manualDeduction||0));
   const advance=Number(input.advanceSalary ?? advanceSalaryFor(month, profile.employee, profile.locationId));
-  const perDay=daysInMonthServer(month)?basic/daysInMonthServer(month):0;
-  const absentDeduction=absentDays*perDay;
-  const net=Math.max(0,basic-advance-absentDeduction-manualDeduction);
-  return {basicSalary:basic,advanceSalary:advance,absentDays,sickLeave,casualLeave,absentDeduction,manualDeduction,netSalary:net};
+  const loan=loanForMonth(profile.employee,month);
+  const loanDeduction=Number(input.loanDeduction ?? loan.installment);
+  const net=Math.max(0,basic-advance-manualDeduction-loanDeduction);
+  return {basicSalary:basic,advanceSalary:advance,absentDays,sickLeave,casualLeave,annualLeave,lateDays,absentDeduction:0,manualDeduction,loanDeduction,loanRemainingAfter:Math.max(0,loan.remaining-loanDeduction),netSalary:net};
 }
 app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   ensureFinanceConfig();
   const month=String(req.query.month||'').slice(0,7);
   const locationId=String(req.query.locationId||'all');
   const employees=(DB.employeeProfiles||[]).filter(p=>locationId==='all'||p.locationId===locationId);
-  const salaries=employees.map(p=>({ ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), record:DB.salaryRecords[salaryKey(month,p.employee)]||null }));
+  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=old?calculateSalary(month,p,{absentDays:old.absentDays,sickLeave:old.sickLeave,casualLeave:old.casualLeave,annualLeave:old.annualLeave,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary}):null; return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), record:rec?{...old,...rec}:null}; });
   const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
   const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
+  const adjustments=[];
+  for(const loc of (DB.locations||[])){ if(locationId!=='all'&&loc.id!==locationId){continue;}
+    adjustments.push({locationId:loc.id,location:loc.name,vendorPayment:Number(DB.financeAdjustments[financeAdjustmentKey(month,loc.id,'vendorPayment')]?.amount||0),referralDoctorShare:Number(DB.financeAdjustments[financeAdjustmentKey(month,loc.id,'referralDoctorShare')]?.amount||0)});
+  }
   const departments=['Laboratory','X-Ray','Ultrasound'];
   const revMap={};
   for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
@@ -184,17 +210,24 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+Number(e.amount||0);
   }
   const salaryMap={};
-  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const val=r?Number(r.netSalary||0):0; const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+val; }
+  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const calc=r?Number(r.netSalary||0):0; const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc; }
   const fixedMap={};
   for(const f of fixed) { const k=f.locationId+'::'+f.department; fixedMap[k]=(fixedMap[k]||0)+Number(f.amount||0); }
+  const cashExpenseMap={};
+  for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
+    if(String(e.date||'').slice(0,7)!==month || !e.locationId || (locationId!=='all'&&e.locationId!==locationId)) continue;
+    const c=(DB.categories||[]).find(x=>x.id===e.catId); if(!c||c.type!=='expense') continue;
+    if(/advance/i.test(c.name||'')) continue;
+    const k=e.locationId; cashExpenseMap[k]=(cashExpenseMap[k]||0)+Number(e.amount||0);
+  }
   const departmentSummary=[];
-  for(const loc of (DB.locations||[])) { if(locationId!=='all'&&loc.id!==locationId) continue; const revs=departments.map(dep=>Number(revMap[loc.id+'::'+dep]||0)); const totalRev=revs.reduce((a,b)=>a+b,0); const allFixed=Number(fixedMap[loc.id+'::ALL']||0); departments.forEach((dep,idx)=>{ const directFixed=Number(fixedMap[loc.id+'::'+dep]||0); const allocatedAll=totalRev?allFixed*(revs[idx]/totalRev):0; const salary=Number(salaryMap[loc.id+'::'+dep]||0)+(Number(salaryMap[loc.id+'::ALL']||0)*(totalRev?revs[idx]/totalRev:0)); departmentSummary.push({location:loc.name,locationId:loc.id,department:dep,revenue:revs[idx],salary,fixedExpense:directFixed+allocatedAll,net:revs[idx]-salary-directFixed-allocatedAll}); }); }
-  res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, departments:['Laboratory','X-Ray','Ultrasound','ALL'], departmentSummary });
+  for(const loc of (DB.locations||[])) { if(locationId!=='all'&&loc.id!==locationId) continue; const revs=departments.map(dep=>Number(revMap[loc.id+'::'+dep]||0)); const totalRev=revs.reduce((a,b)=>a+b,0); const allFixed=Number(fixedMap[loc.id+'::ALL']||0); departments.forEach((dep,idx)=>{ const directFixed=Number(fixedMap[loc.id+'::'+dep]||0); const allocatedAll=totalRev?allFixed*(revs[idx]/totalRev):0; const salary=Number(salaryMap[loc.id+'::'+dep]||0)+(Number(salaryMap[loc.id+'::ALL']||0)*(totalRev?revs[idx]/totalRev:0)); const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0}; const vendor=totalRev?adj.vendorPayment*(revs[idx]/totalRev):0; const referral=totalRev?adj.referralDoctorShare*(revs[idx]/totalRev):0; const cash=totalRev?Number(cashExpenseMap[loc.id]||0)*(revs[idx]/totalRev):0; const net=revs[idx]-salary-directFixed-allocatedAll-vendor-referral-cash; departmentSummary.push({location:loc.name,locationId:loc.id,department:dep,revenue:revs[idx],salary,fixedExpense:directFixed+allocatedAll,vendorPayment:vendor,referralDoctorShare:referral,cashCounterExpense:cash,net}); }); }
+  res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, salaryRecords:DB.salaryRecords||{}, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, financeAdjustments:adjustments, employeeLoans:DB.employeeLoans||{}, departmentSummary });
 });
 app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
   const incoming=Array.isArray(req.body.employeeProfiles)?req.body.employeeProfiles:[];
-  DB.employeeProfiles=incoming.map(p=>({employee:String(p.employee||'').trim(),locationId:String(p.locationId||''),department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(p.department)?p.department:'ALL',salary:Math.max(0,Number(p.salary||0)),active:p.active!==false})).filter(p=>p.employee&&p.locationId);
+  DB.employeeProfiles=incoming.map(p=>({employee:String(p.employee||'').trim(),locationId:String(p.locationId||''),department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(p.department)?p.department:'ALL',salary:Math.max(0,Number(p.salary||0)),sickLeaveEntitlement:Math.max(0,Number(p.sickLeaveEntitlement||0)),casualLeaveEntitlement:Math.max(0,Number(p.casualLeaveEntitlement||0)),annualLeaveEntitlement:Math.max(0,Number(p.annualLeaveEntitlement||0)),active:p.active!==false})).filter(p=>p.employee&&p.locationId);
   try{await persist();res.json({ok:true,employeeProfiles:DB.employeeProfiles});}catch(e){console.error(e);res.status(500).json({error:'Could not save employee profiles.'});}
 });
 app.put('/api/config/fixed-expense-categories', auth, managementOnly, async (req,res)=>{
@@ -211,6 +244,30 @@ app.put('/api/finance-management/salary', auth, managementOnly, async (req,res)=
   const calc=calculateSalary(month,profile,req.body);
   DB.salaryRecords[salaryKey(month,employee)]={month,employee,locationId:profile.locationId,department:profile.department,...calc,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
   try{await persist();res.json({ok:true,record:DB.salaryRecords[salaryKey(month,employee)]});}catch(e){console.error(e);res.status(500).json({error:'Could not save salary record.'});}
+});
+app.put('/api/finance-management/employee-loan', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const employee=String(req.body.employee||'').trim();
+  const profile=DB.employeeProfiles.find(p=>p.employee===employee&&p.active!==false);
+  if(!profile)return res.status(400).json({error:'Valid employee profile is required.'});
+  const amount=Math.max(0,Number(req.body.amount||0));
+  const installment=Math.max(0,Number(req.body.installment||0));
+  const startMonth=String(req.body.startMonth||'').slice(0,7);
+  if(amount<=0 || installment<=0 || !/^\d{4}-\d{2}$/.test(startMonth)) return res.status(400).json({error:'Loan amount, monthly installment and start month are required.'});
+  DB.employeeLoans[employee]={employee,amount,installment,startMonth,remarks:String(req.body.remarks||'').trim(),updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  try{await persist();res.json({ok:true,employeeLoans:DB.employeeLoans});}catch(e){console.error(e);res.status(500).json({error:'Could not save employee loan.'});}
+});
+app.delete('/api/finance-management/employee-loan/:employee', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig(); delete DB.employeeLoans[req.params.employee];
+  try{await persist();res.json({ok:true,employeeLoans:DB.employeeLoans});}catch(e){console.error(e);res.status(500).json({error:'Could not remove employee loan.'});}
+});
+app.put('/api/finance-management/adjustment', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const month=String(req.body.month||'').slice(0,7), locationId=String(req.body.locationId||''), type=String(req.body.type||'');
+  if(!/^\d{4}-\d{2}$/.test(month)||!DB.locations.some(l=>l.id===locationId)||!['vendorPayment','referralDoctorShare'].includes(type)) return res.status(400).json({error:'Valid month, location and adjustment type are required.'});
+  const amount=Math.max(0,Number(req.body.amount||0));
+  DB.financeAdjustments[financeAdjustmentKey(month,locationId,type)]={month,locationId,type,amount,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  try{await persist();res.json({ok:true,financeAdjustments:DB.financeAdjustments});}catch(e){console.error(e);res.status(500).json({error:'Could not save finance adjustment.'});}
 });
 app.put('/api/finance-management/fixed-expense', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
@@ -946,6 +1003,8 @@ async function boot() {
     DB.fixedExpenseCategories = Array.isArray(DB.fixedExpenseCategories) ? DB.fixedExpenseCategories : [];
     DB.fixedExpenses = DB.fixedExpenses && typeof DB.fixedExpenses === 'object' ? DB.fixedExpenses : {};
     DB.salaryRecords = DB.salaryRecords && typeof DB.salaryRecords === 'object' ? DB.salaryRecords : {};
+    DB.employeeLoans = DB.employeeLoans && typeof DB.employeeLoans === 'object' ? DB.employeeLoans : {};
+    DB.financeAdjustments = DB.financeAdjustments && typeof DB.financeAdjustments === 'object' ? DB.financeAdjustments : {};
     const locIds = (DB.locations || []).map(l=>l.id);
     const ensureSpecialCard = (id,name,behavior) => { let c=DB.specialCards.find(x=>x.id===id); if(!c){ c={id,name,behavior,assignedLocationIds:[...locIds],active:true}; DB.specialCards.push(c); changed=true; } else { if(!Array.isArray(c.assignedLocationIds)){c.assignedLocationIds=[...locIds];changed=true;} if(c.behavior!==behavior){c.behavior=behavior;changed=true;} } return c; };
     ensureSpecialCard('ameen','Ameen','ameen');

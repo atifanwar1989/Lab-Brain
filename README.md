@@ -119,3 +119,15 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Selecting All locations clears all individual location checkboxes.
 - Unchecking the last individual location restores All locations.
 - Apply locations uses the exact selected location set on the first attempt.
+
+## V49 — Salary Processing, Leave & Loan, Location Filters, Additional Monthly Expenses
+- Monthly Salary Processing now supports compact fields for Absent, Sick Leave, Casual Leave, Annual Leave, Late and Manual Deduction.
+- Salary calculation is now **Basic Salary - Advance Salary - Manual Deduction - Loan Installment = Net Salary**. No automatic deduction is applied for Absent, Late, Sick, Casual or Annual Leave.
+- Added employee leave entitlements for Sick, Casual and Annual Leave; payslips show Assigned, Taken and Remaining balances.
+- Added employee loan setup with Loan Amount, Start Month, Monthly Installment and remarks. Monthly installment is reflected in salary and payslip.
+- Payslip expanded to include salary deductions, loan details, attendance/leave records and leave balances.
+- Added Location filter to Monthly Salary Processing.
+- Added Location filter to Monthly Fixed Expense Amounts.
+- Added monthly Vendor Payment and Referral Doctor Share input fields, location-wise.
+- Financial report now includes Salary, Fixed Expense, Vendor Payment, Referral Doctor Share and Cash Counter Expense deductions in Net Profit calculation.
+- Existing data is preserved; no transactional reset or destructive migration is performed.
