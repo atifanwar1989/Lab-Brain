@@ -549,20 +549,34 @@ function daySummary(date, username, locationId) {
 }
 app.get('/api/handover', auth, (req, res) => {
   const date = req.query.date;
-  const username = (isManagementRole(req.user.role) && req.query.username) ? req.query.username : req.user.username;
-  res.json({ handover: DB.handovers[hkey(date, username)] || null, summary: daySummary(date, username, isManagementRole(req.user.role) ? null : userLocation(req.user)) });
+  let username = req.user.username;
+  let locationId = userLocation(req.user);
+  if (isManagementRole(req.user.role) && req.query.username && req.query.username !== 'all') {
+    const target = DB.users.find(u => u.username === req.query.username && u.role === 'staff');
+    if (!target) return res.status(400).json({ error: 'Selected Staff account was not found.' });
+    username = target.username;
+    locationId = target.locationId;
+  }
+  res.json({ handover: DB.handovers[hkey(date, username)] || null, summary: daySummary(date, username, locationId) });
 });
 app.post('/api/handover', auth, async (req, res) => {
   const { date, cashShort, excessCash, remark } = req.body || {};
   if (!date) return res.status(400).json({ error: 'date is required' });
   if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates require Admin/Reviewer.' });
   if (Number(cashShort||0) > 0 && Number(excessCash||0) > 0) return res.status(400).json({ error: 'Enter either Cash Short or Excess Cash, not both.' });
-  const username = req.user.username;
-  const locationId = userLocation(req.user);
+  let username = req.user.username;
+  let locationId = userLocation(req.user);
+  if (isManagementRole(req.user.role)) {
+    if (!req.body.username || req.body.username === 'all') return res.status(400).json({ error: 'Select a specific Staff account before updating Cash Handover.' });
+    const target = DB.users.find(u => u.username === req.body.username && u.role === 'staff');
+    if (!target) return res.status(400).json({ error: 'Selected Staff account was not found.' });
+    username = target.username;
+    locationId = target.locationId;
+  }
   const s = daySummary(date, username, locationId);
   const short = Number(cashShort||0), excess = Number(excessCash||0);
   const actual = s.calculated - short + excess;
-  DB.handovers[hkey(date, username)] = { calculated:s.calculated, counted:actual, cashShort:short, excessCash:excess, online:s.online, manualRefund:s.manualRefund, ameenPending:s.ameenPending||0, ameenReceived:s.ameenReceived||0, income:s.income, expense:s.expense, locationId, remark: remark || '', closedAt:Date.now() };
+  DB.handovers[hkey(date, username)] = { calculated:s.calculated, counted:actual, cashShort:short, excessCash:excess, online:s.online, manualRefund:s.manualRefund, ameenPending:s.ameenPending||0, ameenReceived:s.ameenReceived||0, income:s.income, expense:s.expense, locationId, remark: remark || '', closedAt:Date.now(), updatedByUsername:req.user.username, updatedByName:req.user.name };
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });

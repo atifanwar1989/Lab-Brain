@@ -83,3 +83,8 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Unassigned Ameen cards no longer contribute Ameen fields or cash adjustments to a user's Today view.
 - Management Reports support a custom date range in addition to month/single-date modes.
 - Management Reports support selecting multiple locations with checkboxes; CSV/report API filters honor the selected locations.
+
+## V43 developments
+- Expected Closing cards now project the full current-month closing total. The forecast cannot fall below the current month-to-date pace projection; zero/unavailable historical trend data no longer drags the closing estimate down.
+- Admin/Reviewer can view and update Cash Handover for a selected Staff account from Today. Selecting a specific Staff account loads that user's existing handover; Cash Short, Excess Cash and Mismatch Remarks can be corrected and saved. All-user management view does not show a misleading single-user handover.
+- Existing transactional data, calculations, Special Ledger, Ameen/Zakaat, user data and normal Staff handover behavior are preserved.
