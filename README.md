@@ -131,3 +131,13 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Added monthly Vendor Payment and Referral Doctor Share input fields, location-wise.
 - Financial report now includes Salary, Fixed Expense, Vendor Payment, Referral Doctor Share and Cash Counter Expense deductions in Net Profit calculation.
 - Existing data is preserved; no transactional reset or destructive migration is performed.
+
+## V50 — Financial Management Dashboard & Monthly Input Refinement
+- Reworked Salary & Fixed Expenses Monthly Input into separate sections: Monthly Salary Processing, Monthly Utilities & Rent, Monthly Vendor Amount, Monthly Referral Doctor Amount.
+- Added section totals for each monthly input header.
+- Added compact attendance/leave input fields for Absent, Sick Leave, Casual Leave, Annual Leave and Late; monetary fields remain wider.
+- Added Financial Dashboard sub-tab with All Locations/location-wise filtering.
+- Dashboard Total Revenue = Laboratory + X-Ray + Ultrasound.
+- Dashboard separately shows Salary, Utilities & Rent, Vendor Payment, Referral Doctor Share, Cash Counter Expenses, Total Expenses and Net Profit.
+- Cash Counter Expenses include all existing user-entered expense entries for the month.
+- Existing data and configuration are preserved; no transactional reset.

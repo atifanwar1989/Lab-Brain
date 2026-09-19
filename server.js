@@ -217,12 +217,22 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
     if(String(e.date||'').slice(0,7)!==month || !e.locationId || (locationId!=='all'&&e.locationId!==locationId)) continue;
     const c=(DB.categories||[]).find(x=>x.id===e.catId); if(!c||c.type!=='expense') continue;
-    if(/advance/i.test(c.name||'')) continue;
     const k=e.locationId; cashExpenseMap[k]=(cashExpenseMap[k]||0)+Number(e.amount||0);
   }
   const departmentSummary=[];
   for(const loc of (DB.locations||[])) { if(locationId!=='all'&&loc.id!==locationId) continue; const revs=departments.map(dep=>Number(revMap[loc.id+'::'+dep]||0)); const totalRev=revs.reduce((a,b)=>a+b,0); const allFixed=Number(fixedMap[loc.id+'::ALL']||0); departments.forEach((dep,idx)=>{ const directFixed=Number(fixedMap[loc.id+'::'+dep]||0); const allocatedAll=totalRev?allFixed*(revs[idx]/totalRev):0; const salary=Number(salaryMap[loc.id+'::'+dep]||0)+(Number(salaryMap[loc.id+'::ALL']||0)*(totalRev?revs[idx]/totalRev:0)); const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0}; const vendor=totalRev?adj.vendorPayment*(revs[idx]/totalRev):0; const referral=totalRev?adj.referralDoctorShare*(revs[idx]/totalRev):0; const cash=totalRev?Number(cashExpenseMap[loc.id]||0)*(revs[idx]/totalRev):0; const net=revs[idx]-salary-directFixed-allocatedAll-vendor-referral-cash; departmentSummary.push({location:loc.name,locationId:loc.id,department:dep,revenue:revs[idx],salary,fixedExpense:directFixed+allocatedAll,vendorPayment:vendor,referralDoctorShare:referral,cashCounterExpense:cash,net}); }); }
-  res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, salaryRecords:DB.salaryRecords||{}, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, financeAdjustments:adjustments, employeeLoans:DB.employeeLoans||{}, departmentSummary });
+  const financialSummary=[];
+  for(const loc of (DB.locations||[])) {
+    if(locationId!=='all' && loc.id!==locationId) continue;
+    const revenue=departments.reduce((sum,dep)=>sum+Number(revMap[loc.id+'::'+dep]||0),0);
+    const salary=(DB.employeeProfiles||[]).filter(p=>p.active!==false&&p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];return sum+Number(r?.netSalary||0)},0);
+    const utilities=(fixed||[]).filter(f=>f.locationId===loc.id).reduce((sum,f)=>sum+Number(f.amount||0),0);
+    const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0};
+    const vendor=Number(adj.vendorPayment||0), referral=Number(adj.referralDoctorShare||0), cash=Number(cashExpenseMap[loc.id]||0);
+    const net=revenue-salary-utilities-vendor-referral-cash;
+    financialSummary.push({locationId:loc.id,location:loc.name,revenue,salary,utilities,vendor,referral,cash,net});
+  }
+  res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, salaryRecords:DB.salaryRecords||{}, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, financeAdjustments:adjustments, employeeLoans:DB.employeeLoans||{}, departmentSummary, financialSummary });
 });
 app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
