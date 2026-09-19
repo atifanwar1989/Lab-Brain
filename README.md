@@ -98,3 +98,7 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Added configurable Fixed Expense categories with Location + Department (including ALL) assignment and monthly amounts.
 - Added department-level revenue vs salary/fixed-expense allocation view; ALL-department fixed expenses are allocated by department revenue share.
 - No transactional data reset or migration was performed. Existing application data structures remain intact; new finance fields are initialized only when absent.
+
+
+## V46
+- Fixed Management Report multi-location checkbox logic.
