@@ -146,3 +146,13 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Dashboard separately shows Salary, Utilities & Rent, Vendor Payment, Referral Doctor Share, Cash Counter Expenses, Total Expenses and Net Profit.
 - Cash Counter Expenses include all existing user-entered expense entries for the month.
 - Existing data and configuration are preserved; no transactional reset.
+
+## V52 — Staff/User Zakaat Generic Special Card Fix
+- Fixed Staff/User special-card authorization/scoping for generic due/receipt cards such as Zakaat.
+- Corrected the location lookup to use the authenticated user record (`req.user`) rather than the Express request object.
+- Staff Zakaat bookings now remain visible after the optimistic UI refresh because `/api/special-entries` no longer filters the user's valid special-card rows out.
+- Staff Zakaat pending amounts now feed Today → Zakaat Booking/Due and Daily Summary → Zakaat Payment Pending correctly.
+- Staff Zakaat Receipt can retrieve and receive pending dues for the user's assigned location.
+- Staff Special Ledger and generic special-card payment authorization use the same corrected location check.
+- Admin/Reviewer behavior is preserved.
+- No transactional data reset or migration was performed.

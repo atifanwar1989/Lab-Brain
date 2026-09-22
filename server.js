@@ -544,7 +544,10 @@ function specialCardConfig(id){ return (DB.specialCards||[]).find(c=>c.id===id) 
 function specialCardAllowed(req, card, locationId){
   if(!card) return false;
   if(isManagementRole(req.user.role)) return !locationId || locationId==='all' || (card.assignedLocationIds||[]).includes(locationId);
-  const loc=userLocation(req); return (card.assignedLocationIds||[]).includes(loc);
+  // Staff/User access is based on the logged-in user's assigned location.
+  // Do not pass the Express request object to userLocation(); it expects the user record.
+  const loc=userLocation(req.user);
+  return !!loc && (card.assignedLocationIds||[]).includes(loc) && (!locationId || locationId==='all' || locationId===loc);
 }
 function allGenericSpecialBookings(cardId){ return Object.values((DB.specialCardEntries||{})[cardId]||{}).flat(); }
 function genericPaidTotal(rec){ return (rec.payments||[]).reduce((a,p)=>a+Number(p.amount||0),0); }
