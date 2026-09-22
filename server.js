@@ -552,10 +552,34 @@ function specialCardAllowed(req, card, locationId){
 function allGenericSpecialBookings(cardId){ return Object.values((DB.specialCardEntries||{})[cardId]||{}).flat(); }
 function genericPaidTotal(rec){ return (rec.payments||[]).reduce((a,p)=>a+Number(p.amount||0),0); }
 function genericPending(rec){ return Math.max(0,Number(rec.amount||0)-genericPaidTotal(rec)); }
+function sameId(a,b){ return String(a||'').trim()===String(b||'').trim(); }
+function genericSpecialRecordAllowed(req, card, rec){
+  if(!card || !rec) return false;
+  if(isManagementRole(req.user.role)) return !rec.locationId || rec.locationId==='all' || (card.assignedLocationIds||[]).includes(rec.locationId);
+  const userLoc=userLocation(req.user);
+  // Staff can work with dues belonging to their assigned location. Also accept
+  // their own booking if an older record has a stale/missing locationId, but only
+  // when the Zakaat/special card is assigned to their current location.
+  if(!userLoc || !(card.assignedLocationIds||[]).some(x=>sameId(x,userLoc))) return false;
+  return sameId(rec.locationId,userLoc) || sameId(rec.username,req.user.username);
+}
 function genericPaymentRows(cardId,from,to,username,locationId){
   const rows=[]; for(const rec of allGenericSpecialBookings(cardId)) for(const p of (rec.payments||[])){
     if(p.date<from||p.date>to) continue; if(username&&username!=='all'&&p.username!==username) continue; if(locationId&&locationId!=='all'&&p.locationId!==locationId) continue;
     rows.push({...p,bookingId:rec.id,bookingDate:rec.date,bookingAmount:rec.amount,bookingNote:rec.note||'',cardId});
+  } return rows;
+}
+function visibleGenericPaymentRows(req,cardId,from,to,username,locationId){
+  const rows=[]; for(const rec of allGenericSpecialBookings(cardId)){
+    if(!genericSpecialRecordAllowed(req,specialCardConfig(cardId),rec)) continue;
+    for(const p of (rec.payments||[])){
+      if(p.date<from||p.date>to) continue;
+      if(isManagementRole(req.user.role)){
+        if(username&&username!=='all'&&!sameId(p.username,username)) continue;
+        if(locationId&&locationId!=='all'&&!sameId(p.locationId,locationId)) continue;
+      }
+      rows.push({...p,bookingId:rec.id,bookingDate:rec.date,bookingAmount:rec.amount,bookingNote:rec.note||'',cardId});
+    }
   } return rows;
 }
 app.get('/api/special-cards',auth,(req,res)=>{
@@ -582,13 +606,13 @@ app.get('/api/special-ledger',auth,(req,res)=>{
     const bookings=allAmeenBookings().filter(r=>r.date>=from&&r.date<=to&&(locationId==='all'||r.locationId===locationId)&&(username==='all'||r.username===username)&&canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));
     const payments=ameenPaymentRows(from,to,username,locationId).filter(p=>canViewAmeen(req,allAmeenBookings().find(r=>r.id===p.ameenId)||{})); return res.json({card,bookings,payments});
   }
-  const bookings=allGenericSpecialBookings(cardId).filter(r=>r.date>=from&&r.date<=to&&(locationId==='all'||r.locationId===locationId)&&(username==='all'||r.username===username)).map(r=>({...r,paid:genericPaidTotal(r),pending:genericPending(r)}));
-  const payments=genericPaymentRows(cardId,from,to,username,locationId); res.json({card,bookings,payments});
+  const bookings=allGenericSpecialBookings(cardId).filter(r=>r.date>=from&&r.date<=to&&genericSpecialRecordAllowed(req,card,r)).filter(r=>isManagementRole(req.user.role)?(locationId==='all'||sameId(r.locationId,locationId)):(true)).filter(r=>isManagementRole(req.user.role)?(username==='all'||sameId(r.username,username)):true).map(r=>({...r,paid:genericPaidTotal(r),pending:genericPending(r)}));
+  const payments=visibleGenericPaymentRows(req,cardId,from,to,username,locationId); res.json({card,bookings,payments});
 });
 app.post('/api/special-card-payment',auth,async(req,res)=>{
   const {cardId,bookingId,date,amount,note}=req.body||{},card=specialCardConfig(cardId); if(!card||card.behavior!=='generic_due_receipt')return res.status(400).json({error:'Invalid special card.'});
   if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Payment date and valid amount are required.'}); if(!canEditDate(req,date))return res.status(403).json({error:'You cannot add a payment for this date now.'});
-  const rec=allGenericSpecialBookings(cardId).find(r=>r.id===bookingId); if(!rec)return res.status(404).json({error:'Due not found.'}); if(!specialCardAllowed(req,card,rec.locationId))return res.status(403).json({error:'This special card is not available for your location.'});
+  const rec=allGenericSpecialBookings(cardId).find(r=>r.id===bookingId); if(!rec)return res.status(404).json({error:'Due not found.'}); if(!genericSpecialRecordAllowed(req,card,rec))return res.status(403).json({error:'This special card due is not available for your location.'});
   const pending=genericPending(rec); if(Number(amount)>pending)return res.status(400).json({error:`Payment exceeds pending due of Rs ${pending.toLocaleString('en-PK')}.`});
   const loc=isManagementRole(req.user.role)?rec.locationId:userLocation(req); rec.payments=rec.payments||[]; const payment={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),cardId,bookingId:rec.id,date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),ts:Date.now(),bookingDate:rec.date,bookingAmount:Number(rec.amount||0),bookingNote:rec.note||''}; rec.payments.push(payment);
   try{await persist();res.json({ok:true,payment,remaining:genericPending(rec)})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}

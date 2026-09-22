@@ -156,3 +156,13 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Staff Special Ledger and generic special-card payment authorization use the same corrected location check.
 - Admin/Reviewer behavior is preserved.
 - No transactional data reset or migration was performed.
+
+## V53 — Staff/User Zakaat Pending Ledger & Receipt Retrieval Fix
+- Fixed the remaining Staff/User Zakaat retrieval path used by the Zakaat Receipt popup and Special Ledger.
+- Added a normalized generic-special record access check so Staff can retrieve pending dues from their assigned location even when an older record has a stale/missing location identifier, while still requiring the special card to be assigned to the user's current location.
+- Staff can retrieve their own Zakaat booking even if its legacy location value is stale, without exposing other locations.
+- Special Ledger now uses the same Staff-visible generic Zakaat record rules as the Receipt flow.
+- Generic receiving-ledger payments are filtered using the same visibility rules, so Staff can see relevant receipts after payment.
+- Generic Zakaat payment authorization now uses the same visibility rule, preventing a due from appearing but then failing at receipt time.
+- Admin/Reviewer filtering and behavior remain unchanged.
+- No transactional data reset, cleanup, or migration was performed.
