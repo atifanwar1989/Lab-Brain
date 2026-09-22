@@ -573,7 +573,7 @@ app.post('/api/special-card-booking',auth,async(req,res)=>{
 });
 app.get('/api/special-ledger',auth,(req,res)=>{
   const cardId=String(req.query.cardId||'').trim(), card=specialCardConfig(cardId); if(!card)return res.status(404).json({error:'Special card not found.'});
-  const from=req.query.from||'0000-01-01',to=req.query.to||'9999-12-31'; const locationId=isManagementRole(req.user.role)?(req.query.locationId||'all'):userLocation(req); const username=isManagementRole(req.user.role)?(req.query.username||'all'):req.user.username;
+  const from=req.query.from||'0000-01-01',to=req.query.to||'9999-12-31'; const locationId=isManagementRole(req.user.role)?(req.query.locationId||'all'):userLocation(req); const username=isManagementRole(req.user.role)?(req.query.username||'all'):'all';
   if(locationId!=='all' && !(card.assignedLocationIds||[]).includes(locationId))return res.json({card,bookings:[],payments:[]});
   if(card.behavior==='ameen'){
     const bookings=allAmeenBookings().filter(r=>r.date>=from&&r.date<=to&&(locationId==='all'||r.locationId===locationId)&&(username==='all'||r.username===username)&&canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));

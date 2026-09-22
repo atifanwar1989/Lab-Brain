@@ -1,5 +1,10 @@
 # Lab-Brain V36
 
+## V51
+- Fixed Staff users: generic Special Card (e.g. Zakaat) pending-due retrieval so non-management users can see all pending dues for their assigned location, allowing the linked Receipt/Payment flow to find bookings created by the user or another authorized user at the same location.
+- Existing Admin/Reviewer filtering remains unchanged.
+- No transactional data reset or migration.
+
 V26 is based on V25 and preserves the existing configuration model and business features.
 
 ## Included fixes
