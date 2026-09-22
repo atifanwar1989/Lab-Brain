@@ -1,10 +1,5 @@
 # Lab-Brain V36
 
-## V51
-- Fixed Staff users: generic Special Card (e.g. Zakaat) pending-due retrieval so non-management users can see all pending dues for their assigned location, allowing the linked Receipt/Payment flow to find bookings created by the user or another authorized user at the same location.
-- Existing Admin/Reviewer filtering remains unchanged.
-- No transactional data reset or migration.
-
 V26 is based on V25 and preserves the existing configuration model and business features.
 
 ## Included fixes
@@ -146,23 +141,3 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Dashboard separately shows Salary, Utilities & Rent, Vendor Payment, Referral Doctor Share, Cash Counter Expenses, Total Expenses and Net Profit.
 - Cash Counter Expenses include all existing user-entered expense entries for the month.
 - Existing data and configuration are preserved; no transactional reset.
-
-## V52 — Staff/User Zakaat Generic Special Card Fix
-- Fixed Staff/User special-card authorization/scoping for generic due/receipt cards such as Zakaat.
-- Corrected the location lookup to use the authenticated user record (`req.user`) rather than the Express request object.
-- Staff Zakaat bookings now remain visible after the optimistic UI refresh because `/api/special-entries` no longer filters the user's valid special-card rows out.
-- Staff Zakaat pending amounts now feed Today → Zakaat Booking/Due and Daily Summary → Zakaat Payment Pending correctly.
-- Staff Zakaat Receipt can retrieve and receive pending dues for the user's assigned location.
-- Staff Special Ledger and generic special-card payment authorization use the same corrected location check.
-- Admin/Reviewer behavior is preserved.
-- No transactional data reset or migration was performed.
-
-## V53 — Staff/User Zakaat Pending Ledger & Receipt Retrieval Fix
-- Fixed the remaining Staff/User Zakaat retrieval path used by the Zakaat Receipt popup and Special Ledger.
-- Added a normalized generic-special record access check so Staff can retrieve pending dues from their assigned location even when an older record has a stale/missing location identifier, while still requiring the special card to be assigned to the user's current location.
-- Staff can retrieve their own Zakaat booking even if its legacy location value is stale, without exposing other locations.
-- Special Ledger now uses the same Staff-visible generic Zakaat record rules as the Receipt flow.
-- Generic receiving-ledger payments are filtered using the same visibility rules, so Staff can see relevant receipts after payment.
-- Generic Zakaat payment authorization now uses the same visibility rule, preventing a due from appearing but then failing at receipt time.
-- Admin/Reviewer filtering and behavior remain unchanged.
-- No transactional data reset, cleanup, or migration was performed.
