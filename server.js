@@ -488,7 +488,7 @@ app.get('/api/special-entries', auth, (req,res)=>{
   const ameenUsername=isManagementRole(req.user.role)?username:req.user.username;
   const bookings=specialDateRows(DB.ameenEntries,date,ameenUsername,locationId).filter(r=>canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));
   const payments=ameenPaymentRows(date,date,ameenUsername,locationId).filter(p=>isManagementRole(req.user.role)||p.locationId===locationId);
-  const genericCards=(DB.specialCards||[]).filter(c=>c.behavior==='generic_due_receipt'&&c.active!==false); const genericEntries={},genericPayments={}; const genericUsername=isManagementRole(req.user.role)?username:'all'; for(const card of genericCards){ const allowedRows=allGenericSpecialBookings(card.id).filter(r=>(genericUsername==='all'||!genericUsername||r.username===genericUsername)&&(locationId==='all'||!locationId||r.locationId===locationId)&&specialCardAllowed(req,card,r.locationId)); genericEntries[card.id]=allowedRows.filter(r=>r.date===date).map(r=>({...r,paid:genericPaidTotal(r),pending:genericPending(r)})); genericPayments[card.id]=allowedRows.flatMap(r=>(r.payments||[]).filter(p=>p.date===date).map(p=>({...p,bookingId:r.id,bookingDate:r.date,bookingAmount:r.amount,bookingNote:r.note||'',cardId:card.id}))); } res.json({onlineEntries:online,manualRefundEntries:refunds,ameenEntries:bookings,ameenPayments:payments,genericSpecialEntries:genericEntries,genericSpecialPayments:genericPayments,legacyOnline,legacyRefund});
+  const genericCards=(DB.specialCards||[]).filter(c=>c.behavior==='generic_due_receipt'&&c.active!==false); const genericEntries={},genericPayments={}; const genericUsername=isManagementRole(req.user.role)?username:'all'; for(const card of genericCards){ const allowedRows=allGenericSpecialBookings(card.id).filter(r=>{const rLoc=genericBookingLocation(r);return (genericUsername==='all'||!genericUsername||r.username===genericUsername)&&(locationId==='all'||!locationId||rLoc===locationId)&&specialCardAllowed(req,card,rLoc)}); genericEntries[card.id]=allowedRows.filter(r=>r.date===date).map(r=>({...r,locationId:genericBookingLocation(r),paid:genericPaidTotal(r),pending:genericPending(r)})); genericPayments[card.id]=allowedRows.flatMap(r=>(r.payments||[]).filter(p=>p.date===date).map(p=>({...p,bookingId:r.id,bookingDate:r.date,bookingAmount:r.amount,bookingNote:r.note||'',locationId:p.locationId||genericBookingLocation(r),cardId:card.id}))); } res.json({onlineEntries:online,manualRefundEntries:refunds,ameenEntries:bookings,ameenPayments:payments,genericSpecialEntries:genericEntries,genericSpecialPayments:genericPayments,legacyOnline,legacyRefund});
 });
 app.post('/api/online-entry', auth, async (req,res)=>{
   const {date,amount,note,transferor,locationId}=req.body||{};
@@ -547,12 +547,26 @@ function specialCardAllowed(req, card, locationId){
   const loc=userLocation(req); return (card.assignedLocationIds||[]).includes(loc);
 }
 function allGenericSpecialBookings(cardId){ return Object.values((DB.specialCardEntries||{})[cardId]||{}).flat(); }
+// Resolve the branch for a generic special booking. Older Zakaat records may
+// have been saved before locationId was consistently written. In that case,
+// use the current Staff account's assigned location as a read-only fallback.
+// New records always keep their explicit locationId.
+function genericBookingLocation(rec){
+  if(rec && rec.locationId) return rec.locationId;
+  if(rec && rec.username){
+    const u=(DB.users||[]).find(x=>x.username===rec.username);
+    if(u && u.locationId) return u.locationId;
+  }
+  return null;
+}
 function genericPaidTotal(rec){ return (rec.payments||[]).reduce((a,p)=>a+Number(p.amount||0),0); }
 function genericPending(rec){ return Math.max(0,Number(rec.amount||0)-genericPaidTotal(rec)); }
 function genericPaymentRows(cardId,from,to,username,locationId){
   const rows=[]; for(const rec of allGenericSpecialBookings(cardId)) for(const p of (rec.payments||[])){
-    if(p.date<from||p.date>to) continue; if(username&&username!=='all'&&p.username!==username) continue; if(locationId&&locationId!=='all'&&p.locationId!==locationId) continue;
-    rows.push({...p,bookingId:rec.id,bookingDate:rec.date,bookingAmount:rec.amount,bookingNote:rec.note||'',cardId});
+    const rLoc=genericBookingLocation(rec);
+    const pLoc=p.locationId||rLoc;
+    if(p.date<from||p.date>to) continue; if(username&&username!=='all'&&p.username!==username) continue; if(locationId&&locationId!=='all'&&pLoc!==locationId) continue;
+    rows.push({...p,locationId:pLoc,bookingId:rec.id,bookingDate:rec.date,bookingAmount:rec.amount,bookingNote:rec.note||'',cardId});
   } return rows;
 }
 app.get('/api/special-cards',auth,(req,res)=>{
@@ -579,15 +593,15 @@ app.get('/api/special-ledger',auth,(req,res)=>{
     const bookings=allAmeenBookings().filter(r=>r.date>=from&&r.date<=to&&(locationId==='all'||r.locationId===locationId)&&(username==='all'||r.username===username)&&canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));
     const payments=ameenPaymentRows(from,to,username,locationId).filter(p=>canViewAmeen(req,allAmeenBookings().find(r=>r.id===p.ameenId)||{})); return res.json({card,bookings,payments});
   }
-  const bookings=allGenericSpecialBookings(cardId).filter(r=>r.date>=from&&r.date<=to&&(locationId==='all'||r.locationId===locationId)&&(username==='all'||r.username===username)).map(r=>({...r,paid:genericPaidTotal(r),pending:genericPending(r)}));
+  const bookings=allGenericSpecialBookings(cardId).filter(r=>{const rLoc=genericBookingLocation(r);return r.date>=from&&r.date<=to&&(locationId==='all'||rLoc===locationId)&&(username==='all'||r.username===username)&&specialCardAllowed(req,card,rLoc)}).map(r=>({...r,locationId:genericBookingLocation(r),paid:genericPaidTotal(r),pending:genericPending(r)}));
   const payments=genericPaymentRows(cardId,from,to,username,locationId); res.json({card,bookings,payments});
 });
 app.post('/api/special-card-payment',auth,async(req,res)=>{
   const {cardId,bookingId,date,amount,note}=req.body||{},card=specialCardConfig(cardId); if(!card||card.behavior!=='generic_due_receipt')return res.status(400).json({error:'Invalid special card.'});
   if(!date||!Number.isFinite(Number(amount))||Number(amount)<=0)return res.status(400).json({error:'Payment date and valid amount are required.'}); if(!canEditDate(req,date))return res.status(403).json({error:'You cannot add a payment for this date now.'});
-  const rec=allGenericSpecialBookings(cardId).find(r=>r.id===bookingId); if(!rec)return res.status(404).json({error:'Due not found.'}); if(!specialCardAllowed(req,card,rec.locationId))return res.status(403).json({error:'This special card is not available for your location.'});
+  const rec=allGenericSpecialBookings(cardId).find(r=>r.id===bookingId); if(!rec)return res.status(404).json({error:'Due not found.'}); const recLocation=genericBookingLocation(rec); if(!specialCardAllowed(req,card,recLocation))return res.status(403).json({error:'This special card is not available for your location.'});
   const pending=genericPending(rec); if(Number(amount)>pending)return res.status(400).json({error:`Payment exceeds pending due of Rs ${pending.toLocaleString('en-PK')}.`});
-  const loc=isManagementRole(req.user.role)?rec.locationId:userLocation(req); rec.payments=rec.payments||[]; const payment={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),cardId,bookingId:rec.id,date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),ts:Date.now(),bookingDate:rec.date,bookingAmount:Number(rec.amount||0),bookingNote:rec.note||''}; rec.payments.push(payment);
+  const loc=isManagementRole(req.user.role)?recLocation:userLocation(req); rec.payments=rec.payments||[]; const payment={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),cardId,bookingId:rec.id,date,username:req.user.username,name:req.user.name,locationId:loc,amount:Number(amount),note:String(note||''),ts:Date.now(),bookingDate:rec.date,bookingAmount:Number(rec.amount||0),bookingNote:rec.note||''}; rec.payments.push(payment);
   try{await persist();res.json({ok:true,payment,remaining:genericPending(rec)})}catch(e){console.error(e);res.status(500).json({error:'Could not save. Please try again.'})}
 });
 app.post('/api/ameen/bulk-payment',auth,async(req,res)=>{
@@ -602,7 +616,7 @@ app.post('/api/special-card-bulk-payment',auth,async(req,res)=>{
   const {cardId,bookingIds,date,note}=req.body||{},card=specialCardConfig(cardId); if(!card||card.behavior!=='generic_due_receipt')return res.status(400).json({error:'Invalid special card.'});
   if(!date||!Array.isArray(bookingIds)||!bookingIds.length)return res.status(400).json({error:'Select at least one pending due.'}); if(!canEditDate(req,date))return res.status(403).json({error:'You cannot add a payment for this date now.'});
   const recs=bookingIds.map(id=>allGenericSpecialBookings(cardId).find(r=>r.id===id)).filter(Boolean); if(recs.length!==bookingIds.length)return res.status(400).json({error:'One or more selected dues could not be found.'});
-  if(recs.some(r=>!specialCardAllowed(req,card,r.locationId)))return res.status(403).json({error:'One or more selected dues are not available for your location.'});
+  if(recs.some(r=>!specialCardAllowed(req,card,genericBookingLocation(r))))return res.status(403).json({error:'One or more selected dues are not available for your location.'});
   const payments=[]; for(const rec of recs){const pending=genericPending(rec);if(pending<=0)continue;rec.payments=rec.payments||[];const payment={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7)+Math.random().toString(36).slice(2,5),cardId,bookingId:rec.id,date,username:req.user.username,name:req.user.name,locationId:isManagementRole(req.user.role)?rec.locationId:userLocation(req),amount:pending,note:String(note||'Bulk payment received'),ts:Date.now(),bookingDate:rec.date,bookingAmount:Number(rec.amount||0),bookingNote:rec.note||''};rec.payments.push(payment);payments.push(payment)}
   try{await persist();res.json({ok:true,payments,total:payments.reduce((a,p)=>a+p.amount,0)})}catch(e){console.error(e);res.status(500).json({error:'Could not save bulk payment. Please try again.'})}
 });
