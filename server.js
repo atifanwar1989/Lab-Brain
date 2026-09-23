@@ -569,6 +569,19 @@ function genericPaymentRows(cardId,from,to,username,locationId){
     rows.push({...p,locationId:pLoc,bookingId:rec.id,bookingDate:rec.date,bookingAmount:rec.amount,bookingNote:rec.note||'',cardId});
   } return rows;
 }
+function genericVisibleBookings(req, card, from='0000-01-01', to='9999-12-31') {
+  const locationId=isManagementRole(req.user.role)?(req.query.locationId||'all'):userLocation(req);
+  // Generic Due/Receipt cards (including Zakaat) are location-based for Staff.
+  // Do not restrict Staff by the booking creator's username.
+  const username=isManagementRole(req.user.role)?(req.query.username||'all'):'all';
+  return allGenericSpecialBookings(card.id).filter(r=>{
+    const rLoc=genericBookingLocation(r);
+    return r.date>=from&&r.date<=to
+      &&(locationId==='all'||!locationId||rLoc===locationId)
+      &&(username==='all'||!username||r.username===username)
+      &&specialCardAllowed(req,card,rLoc);
+  }).map(r=>({...r,locationId:genericBookingLocation(r),paid:genericPaidTotal(r),pending:genericPending(r)}));
+}
 app.get('/api/special-cards',auth,(req,res)=>{
   const cards=(DB.specialCards||[]).filter(c=>c.active!==false && specialCardAllowed(req,c,req.query.locationId||null));
   res.json({cards});
@@ -593,8 +606,14 @@ app.get('/api/special-ledger',auth,(req,res)=>{
     const bookings=allAmeenBookings().filter(r=>r.date>=from&&r.date<=to&&(locationId==='all'||r.locationId===locationId)&&(username==='all'||r.username===username)&&canViewAmeen(req,r)).map(r=>({...r,paid:ameenPaidTotal(r),pending:ameenPending(r)}));
     const payments=ameenPaymentRows(from,to,username,locationId).filter(p=>canViewAmeen(req,allAmeenBookings().find(r=>r.id===p.ameenId)||{})); return res.json({card,bookings,payments});
   }
-  const bookings=allGenericSpecialBookings(cardId).filter(r=>{const rLoc=genericBookingLocation(r);return r.date>=from&&r.date<=to&&(locationId==='all'||rLoc===locationId)&&(username==='all'||r.username===username)&&specialCardAllowed(req,card,rLoc)}).map(r=>({...r,locationId:genericBookingLocation(r),paid:genericPaidTotal(r),pending:genericPending(r)}));
+  const bookings=genericVisibleBookings(req,card,from,to);
   const payments=genericPaymentRows(cardId,from,to,username,locationId); res.json({card,bookings,payments});
+});
+app.get('/api/special-card-pending',auth,(req,res)=>{
+  const cardId=String(req.query.cardId||'').trim(), card=specialCardConfig(cardId);
+  if(!card||card.behavior!=='generic_due_receipt') return res.status(404).json({error:'Special card not found.'});
+  const rows=genericVisibleBookings(req,card).filter(r=>r.pending>0);
+  res.json({card,bookings:rows});
 });
 app.post('/api/special-card-payment',auth,async(req,res)=>{
   const {cardId,bookingId,date,amount,note}=req.body||{},card=specialCardConfig(cardId); if(!card||card.behavior!=='generic_due_receipt')return res.status(400).json({error:'Invalid special card.'});
