@@ -700,7 +700,7 @@ app.get('/api/patients', auth, (req, res) => {
 });
 app.put('/api/patients', auth, async (req, res) => {
   const { date, count } = req.body || {};
-  if (!date || count == null || Number(count) < 0 || !Number.isFinite(Number(count))) return res.status(400).json({ error: 'date and a valid patient count are required' });
+  if (!date || count == null || Number(count) < 0 || Number(count) > 999 || !Number.isFinite(Number(count)) || !Number.isInteger(Number(count))) return res.status(400).json({ error: 'Patient Count must be a whole number from 0 to 999.' });
   if (!canEditDate(req, date)) return res.status(403).json({ error: 'Previous dates can only be corrected by Admin/Reviewer.' });
   DB.patientCounts = DB.patientCounts || {};
   const username = isManagementRole(req.user.role) && req.body.username ? req.body.username : req.user.username;
@@ -934,6 +934,43 @@ app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
     res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="lab-brain-report-${from}-to-${to}.csv"`);res.send('\ufeff'+lines.join('\n'));
   }catch(e){console.error(e);res.status(500).send('Could not export report.');}
 });
+
+app.get('/api/ai-activity-check', auth, managementOnly, (req,res)=>{ const from=String(req.query.from||'').slice(0,10), to=String(req.query.to||'').slice(0,10), locationId=String(req.query.locationId||'all'); if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)||from>to)return res.status(400).json({error:'Valid From and To dates are required.'}); if((new Date(to+'T12:00:00Z')-new Date(from+'T12:00:00Z'))/86400000>366)return res.status(400).json({error:'Please check a maximum of 12 months at a time.'}); if(locationId!=='all'&&!((DB.locations||[]).some(l=>l.id===locationId)))return res.status(400).json({error:'Invalid branch.'}); try{res.json(aiActivityCheck({from,to,locationId}));}catch(e){console.error('AI activity check failed:',e);res.status(500).json({error:'AI Activity Check could not be completed.'});} });
+
+function aiDateList(from,to){ const out=[]; const d=new Date(from+'T12:00:00Z'), end=new Date(to+'T12:00:00Z'); while(d<=end){out.push(d.toISOString().slice(0,10));d.setUTCDate(d.getUTCDate()+1)} return out; }
+function aiWeekday(date){ return new Date(date+'T12:00:00Z').getUTCDay(); }
+function aiPkMinutes(ts){ if(!ts) return null; const d=new Date(Number(ts)); if(!Number.isFinite(d.getTime())) return null; const s=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Karachi',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(d); const h=Number(s.find(x=>x.type==='hour')?.value),m=Number(s.find(x=>x.type==='minute')?.value); return h*60+m; }
+function aiFmtMinutes(v){let n=Math.round(((v%1440)+1440)%1440);const h=Math.floor(n/60),m=n%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`}
+function aiCircularDistance(a,b){let d=Math.abs(a-b);return Math.min(d,1440-d)}
+function aiActivityCheck({from,to,locationId='all'}){
+  const targetDates=aiDateList(from,to); const baselineStart=new Date(from+'T12:00:00Z'); baselineStart.setUTCDate(baselineStart.getUTCDate()-30); const baselineFrom=baselineStart.toISOString().slice(0,10); const baselineEnd=new Date(from+'T12:00:00Z'); baselineEnd.setUTCDate(baselineEnd.getUTCDate()-1); const baselineTo=baselineEnd.toISOString().slice(0,10); const baselineDates=aiDateList(baselineFrom,baselineTo); const dates=aiDateList(baselineFrom,to); const targetSet=new Set(targetDates); const dateSet=new Set(dates); const locs=(DB.locations||[]).filter(l=>locationId==='all'||l.id===locationId); const locSet=new Set(locs.map(l=>l.id));
+  const staff=(DB.users||[]).filter(u=>u.role==='staff'&&u.locationId&&locSet.has(u.locationId));
+  const activity=new Map(), times=new Map(), handovers=new Map();
+  const add=(date,username,loc,ts,type)=>{if(!date||!username||!locSet.has(loc))return; const k=date+'::'+username; if(!activity.has(k))activity.set(k,{date,username,locationId:loc,types:new Set(),count:0}); const a=activity.get(k);a.types.add(type);a.count++; if(ts){const mins=aiPkMinutes(ts);if(mins!=null){if(!times.has(username))times.set(username,[]);times.get(username).push(mins)}}};
+  for(const mk of Object.keys(DB.entries||{})) for(const e of DB.entries[mk]||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts||e.createdAt,'entry');
+  for(const [k,v] of Object.entries(DB.onlineEntries||{})) for(const e of v||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'online');
+  for(const [k,v] of Object.entries(DB.manualRefundEntries||{})) for(const e of v||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'refund');
+  for(const mk of Object.keys(DB.ameenEntries||{})) for(const e of DB.ameenEntries[mk]||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'ameen');
+  for(const card of DB.specialCards||[]) for(const mk of Object.keys(DB.specialCardEntries||{})) for(const e of (DB.specialCardEntries[mk]||[])) if(e.cardId===card.id&&dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'special');
+  for(const [k,h] of Object.entries(DB.handovers||{})){const sep=k.indexOf('::');if(sep<0)continue;const date=k.slice(0,sep),username=k.slice(sep+2);if(dateSet.has(date)&&h&&locSet.has(h.locationId)) {handovers.set(k,h);add(date,username,h.locationId,h.closedAt,'handover');}}
+  for(const [k,v] of Object.entries(DB.patientCounts||{})){const sep=k.indexOf('::');if(sep<0)continue;const date=k.slice(0,sep),username=k.slice(sep+2);if(dateSet.has(date)){const u=staff.find(x=>x.username===username);if(u) add(date,username,u.locationId,null,'patient-count');}}
+  const alerts=[]; const locDateStats=new Map(); const userWeek=new Map();
+  for(const l of locs){for(const d of dates){const has=[...activity.values()].some(a=>a.date===d&&a.locationId===l.id);if(!locDateStats.has(l.id))locDateStats.set(l.id,{});locDateStats.get(l.id)[d]=has;}}
+  for(const u of staff){const key=u.username; const byW={}; for(const d of baselineDates){const w=aiWeekday(d);const active=activity.has(d+'::'+key);byW[w]??={active:0,total:0};byW[w].total++;if(active)byW[w].active++;}userWeek.set(key,byW);}
+  const locById=new Map(locs.map(l=>[l.id,l]));
+  // Branch working-day patterns and missing users.
+  for(const l of locs){const stats=locDateStats.get(l.id)||{};for(const d of targetDates){if(d>todayPakistan())continue;const w=aiWeekday(d);let activeDays=0,totalDays=0;for(const dd of baselineDates){if(aiWeekday(dd)!==w||dd>=todayPakistan())continue;totalDays++;if(stats[dd])activeDays++;}const branchRate=totalDays?activeDays/totalDays:0;const anyActivity=!!stats[d];if(!anyActivity&&totalDays>=3&&branchRate>=0.65){alerts.push({date:d,locationId:l.id,locationName:l.name,username:'',userName:'—',severity:'high',title:'No branch activity detected',reason:`This branch normally has activity on ${Math.round(branchRate*100)}% of comparable ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][w]} days. No user activity was recorded.`});}}
+    for(const u of staff.filter(x=>x.locationId===l.id)){const bw=userWeek.get(u.username)||{};for(const d of targetDates){if(d>todayPakistan())continue;const w=aiWeekday(d),st=bw[w];if(!st||st.total<3||st.active/st.total<0.65)continue;const branchActive=!!stats[d],userActive=activity.has(d+'::'+u.username);if(branchActive&&!userActive){alerts.push({date:d,locationId:l.id,locationName:l.name,username:u.username,userName:u.name,severity:'high',title:'Expected user activity missing',reason:`${u.name} normally records activity on ${st.active} of ${st.total} comparable ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][w]} days (${Math.round(st.active/st.total*100)}%). No activity was found for this date.`});}}}
+  }
+  // Unclosed handovers: flag past dates, and current date only late in Pakistan time.
+  const now=pakistanDateTime();
+  for(const a of activity.values()){if(!targetSet.has(a.date))continue;const shouldCheck=a.date<now.date || (a.date===now.date&&now.hour>=23);if(!shouldCheck)continue;const key=a.date+'::'+a.username;if(!handovers.has(key)){const l=locById.get(a.locationId);alerts.push({date:a.date,locationId:a.locationId,locationName:l?.name||'—',username:a.username,userName:(staff.find(u=>u.username===a.username)||{}).name||a.username,severity:'high',title:'Handover not closed',reason:'Activity was recorded for this date, but no Cash Handover record was found. Check the date before reconciling with LIS.'});}}
+  // Unusual time: compare each user's activity times against their median circularly.
+  for(const u of staff){const arr=times.get(u.username)||[];if(arr.length<6)continue;const median=[...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)];for(const a of activity.values()){if(!targetSet.has(a.date)||a.username!==u.username||a.date>todayPakistan())continue;const key=a.date+'::'+u.username;const relevant=[...activity.values()].filter(x=>x.username===u.username&&x.date===a.date);const mins=[];for(const e of (DB.entries[a.date.slice(0,7)]||[]))if(e.date===a.date&&e.username===u.username){const m=aiPkMinutes(e.ts||e.createdAt);if(m!=null)mins.push(m)};if(!mins.length)continue;const closest=Math.min(...mins.map(m=>aiCircularDistance(m,median)));if(closest>240){const l=locById.get(u.locationId);alerts.push({date:a.date,locationId:u.locationId,locationName:l?.name||'—',username:u.username,userName:u.name,severity:'medium',title:'Unusual entry time',reason:`Typical activity is around ${aiFmtMinutes(median)} Pakistan time; recorded activity was around ${aiFmtMinutes(mins[0])}. Verify this date if needed.`});break;}}}
+  const rank={high:0,medium:1,low:2};alerts.sort((a,b)=>a.date.localeCompare(b.date)||rank[a.severity]-rank[b.severity]||String(a.locationName).localeCompare(String(b.locationName)));
+  const dedup=new Map();for(const a of alerts){const k=[a.date,a.locationId,a.username,a.title].join('|');if(!dedup.has(k))dedup.set(k,a);}const final=[...dedup.values()];const counts={high:final.filter(a=>a.severity==='high').length,medium:final.filter(a=>a.severity==='medium').length,low:final.filter(a=>a.severity==='low').length};
+  return {from,to,baselineFrom,baselineDays:30,locationId,checkedDays:targetDates.length,counts,alerts:final,generatedAt:Date.now(),generatedAtLabel:new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'})};
+}
 
 app.get('/api/management-summary', auth, (req, res) => {
   const from = req.query.from, to = req.query.to;
