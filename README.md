@@ -154,3 +154,10 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Fixed AI Activity Check crash caused by nested generic special-card entry storage.
 - AI scan now safely reads `specialCardEntries[cardId][month]` and ignores malformed legacy rows instead of failing the whole check.
 - Existing transactional data and V61/V59 functionality are preserved; no reset or deletion is performed.
+
+
+## V63 development
+- Added Admin account Active/Inactive control with login blocking; old records remain preserved.
+- Inactive status is tracked with effective-date history so AI Activity Check does not flag former staff after they leave.
+- Expanded AI Activity Check with patient-count completeness/anomaly checks, Laboratory/X-ray/Ultrasound completeness and amount anomaly checks, and branch-wide unusually low/no-revenue detection.
+- AI remains analysis-only and never edits transactional records.

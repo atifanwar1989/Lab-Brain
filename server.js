@@ -31,10 +31,11 @@ function auth(req, res, next) {
   const token = h.replace('Bearer ', '');
   try {
     const claims = jwt.verify(token, SECRET);
-    // Always refresh the role/name from the database. This prevents a stale JWT
-    // from keeping an account in Staff mode after an admin role is restored.
+    // Always refresh the role/name/status from the database. This prevents a stale JWT
+    // from keeping an inactive account usable after an admin disables it.
     const user = DB && DB.users.find(u => u.id === claims.id || u.username === claims.username);
     if (!user) return res.status(401).json({ error: 'Account no longer exists' });
+    if (user.active === false) return res.status(401).json({ error: 'This account is disabled. Please contact the administrator.' });
     req.user = { id: user.id, username: user.username, role: user.role, name: user.name, locationId: user.locationId || null };
     next();
   } catch (e) {
@@ -65,6 +66,7 @@ app.post('/api/login', (req, res) => {
   if (!user || !bcrypt.compareSync(password || '', user.passwordHash || '')) {
     return res.status(401).json({ error: 'Wrong username or password' });
   }
+  if (user.active === false) return res.status(403).json({ error: 'This account is disabled. Please contact the administrator.' });
   res.json({ token: sign(user), user: { id: user.id, name: user.name, username: user.username, role: user.role, locationId: user.locationId || null } });
 });
 
@@ -97,7 +99,8 @@ app.post('/api/change-password', auth, async (req, res) => {
 app.get('/api/config', auth, (req, res) => {
   const locations = DB.locations || [];
   const staff = DB.users.map(u => ({
-    id: u.id, name: u.name, username: u.username, role: u.role, locationId: u.locationId || null
+    id: u.id, name: u.name, username: u.username, role: u.role, locationId: u.locationId || null,
+    active: u.active !== false, statusHistory: Array.isArray(u.statusHistory) ? u.statusHistory : []
   }));
   res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], specialCards: DB.specialCards || [], staff, employeeProfiles: DB.employeeProfiles || [], fixedExpenseCategories: DB.fixedExpenseCategories || [] });
 });
@@ -302,7 +305,8 @@ app.post('/api/users', auth, adminOnly, async (req, res) => {
   if (DB.users.some(u => u.username === username)) return res.status(400).json({ error: 'Username already exists' });
   const newRole = ['admin','reviewer','staff'].includes(role) ? role : 'staff';
   if (newRole === 'staff' && !(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: 'A location is required for Staff accounts.' });
-  DB.users.push({ id: username.toLowerCase(), name, username, passwordHash: bcrypt.hashSync(password, 10), role: newRole, locationId: newRole === 'staff' ? locationId : null });
+  const createdDate = todayPakistan();
+  DB.users.push({ id: username.toLowerCase(), name, username, passwordHash: bcrypt.hashSync(password, 10), role: newRole, locationId: newRole === 'staff' ? locationId : null, active: true, statusHistory: [{active:true,effectiveDate:createdDate}] });
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
@@ -310,6 +314,16 @@ app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
   const u = DB.users.find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'Not found' });
   const { name, role, password, locationId } = req.body || {};
+  if (typeof req.body.active === 'boolean') {
+    if (u.id === req.user.id && req.body.active === false) return res.status(400).json({ error: 'You cannot disable your own logged-in account.' });
+    if (u.id === 'admin' && req.body.active === false) return res.status(400).json({ error: 'The main admin account cannot be disabled.' });
+    const nextActive = req.body.active;
+    const effectiveDate = String(req.body.effectiveDate || todayPakistan()).slice(0,10);
+    u.active = nextActive;
+    u.statusHistory = Array.isArray(u.statusHistory) ? u.statusHistory : [{active:true,effectiveDate:'1900-01-01'}];
+    const last = u.statusHistory[u.statusHistory.length-1];
+    if (!last || last.active !== nextActive || last.effectiveDate !== effectiveDate) u.statusHistory.push({active:nextActive,effectiveDate});
+  }
   if (name) u.name = name;
   if (role) {
     const newRole = ['admin','reviewer','staff'].includes(role) ? role : 'staff';
@@ -942,43 +956,185 @@ function aiWeekday(date){ return new Date(date+'T12:00:00Z').getUTCDay(); }
 function aiPkMinutes(ts){ if(!ts) return null; const d=new Date(Number(ts)); if(!Number.isFinite(d.getTime())) return null; const s=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Karachi',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(d); const h=Number(s.find(x=>x.type==='hour')?.value),m=Number(s.find(x=>x.type==='minute')?.value); return h*60+m; }
 function aiFmtMinutes(v){let n=Math.round(((v%1440)+1440)%1440);const h=Math.floor(n/60),m=n%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`}
 function aiCircularDistance(a,b){let d=Math.abs(a-b);return Math.min(d,1440-d)}
+function aiNormalizeCategoryName(name){
+  return String(name||'').toLowerCase().replace(/[^a-z0-9]+/g,'');
+}
+function aiCategoryKind(cat){
+  const n=aiNormalizeCategoryName(cat?.name);
+  if(cat?.type!=='income') return null;
+  if(n==='laboratory'||n==='lab') return 'Laboratory';
+  if(n==='xray'||n==='xraytest'||n==='xrayservice') return 'X-ray';
+  if(n==='ultrasound'||n==='ultrasoundtest'||n==='ultrasoundservice') return 'Ultrasound';
+  return null;
+}
+function aiStatusHistoryFor(user){
+  const h=Array.isArray(user?.statusHistory)?user.statusHistory.slice():[];
+  if(!h.length) return [{active:true,effectiveDate:'1900-01-01'}];
+  return h.sort((a,b)=>String(a.effectiveDate||'').localeCompare(String(b.effectiveDate||'')));
+}
+function aiUserActiveOn(user,date){
+  if(!user) return false;
+  const h=aiStatusHistoryFor(user); let active=true;
+  for(const x of h){if(String(x.effectiveDate||'')<=date) active=x.active!==false; else break;}
+  return active && user.active!==false ? true : (active && String(date)<String(todayPakistan()) ? true : false);
+}
+function aiMedian(values){
+  const a=values.filter(Number.isFinite).slice().sort((x,y)=>x-y); if(!a.length)return 0;
+  const m=Math.floor(a.length/2); return a.length%2?a[m]:(a[m-1]+a[m])/2;
+}
+function aiPct(v){return Math.round(v*100);}
 function aiActivityCheck({from,to,locationId='all'}){
-  const targetDates=aiDateList(from,to); const baselineStart=new Date(from+'T12:00:00Z'); baselineStart.setUTCDate(baselineStart.getUTCDate()-30); const baselineFrom=baselineStart.toISOString().slice(0,10); const baselineEnd=new Date(from+'T12:00:00Z'); baselineEnd.setUTCDate(baselineEnd.getUTCDate()-1); const baselineTo=baselineEnd.toISOString().slice(0,10); const baselineDates=aiDateList(baselineFrom,baselineTo); const dates=aiDateList(baselineFrom,to); const targetSet=new Set(targetDates); const dateSet=new Set(dates); const locs=(DB.locations||[]).filter(l=>locationId==='all'||l.id===locationId); const locSet=new Set(locs.map(l=>l.id));
-  const staff=(DB.users||[]).filter(u=>u.role==='staff'&&u.locationId&&locSet.has(u.locationId));
+  const targetDates=aiDateList(from,to);
+  const baselineStart=new Date(from+'T12:00:00Z'); baselineStart.setUTCDate(baselineStart.getUTCDate()-30);
+  const baselineFrom=baselineStart.toISOString().slice(0,10);
+  const baselineEnd=new Date(from+'T12:00:00Z'); baselineEnd.setUTCDate(baselineEnd.getUTCDate()-1);
+  const baselineTo=baselineEnd.toISOString().slice(0,10);
+  const baselineDates=aiDateList(baselineFrom,baselineTo);
+  const dates=aiDateList(baselineFrom,to);
+  const targetSet=new Set(targetDates), dateSet=new Set(dates);
+  const locs=(DB.locations||[]).filter(l=>locationId==='all'||l.id===locationId), locSet=new Set(locs.map(l=>l.id));
+  const users=(DB.users||[]).filter(u=>u.role==='staff'&&u.locationId&&locSet.has(u.locationId));
+  const userByName=new Map(users.map(u=>[u.username,u]));
   const activity=new Map(), times=new Map(), handovers=new Map();
-  const add=(date,username,loc,ts,type)=>{if(!date||!username||!locSet.has(loc))return; const k=date+'::'+username; if(!activity.has(k))activity.set(k,{date,username,locationId:loc,types:new Set(),count:0}); const a=activity.get(k);a.types.add(type);a.count++; if(ts){const mins=aiPkMinutes(ts);if(mins!=null){if(!times.has(username))times.set(username,[]);times.get(username).push(mins)}}};
-  for(const mk of Object.keys(DB.entries||{})) for(const e of DB.entries[mk]||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts||e.createdAt,'entry');
-  for(const [k,v] of Object.entries(DB.onlineEntries||{})) for(const e of v||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'online');
-  for(const [k,v] of Object.entries(DB.manualRefundEntries||{})) for(const e of v||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'refund');
-  for(const mk of Object.keys(DB.ameenEntries||{})) for(const e of DB.ameenEntries[mk]||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'ameen');
-  // Generic special-card entries are stored as: specialCardEntries[cardId][month] -> entries[].
-  // Keep the AI scan defensive so one malformed/legacy record cannot abort the whole analysis.
-  for(const [cardId, byMonth] of Object.entries(DB.specialCardEntries||{})){
-    if(!byMonth || typeof byMonth!=='object' || Array.isArray(byMonth)) continue;
-    for(const mk of Object.keys(byMonth)){
-      const rows=Array.isArray(byMonth[mk])?byMonth[mk]:[];
-      for(const e of rows){
-        if(e && e.cardId===cardId && dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts||e.createdAt,'special');
+  const dayUser=new Map(), branchDay=new Map();
+  const ensureUserDay=(date,username,loc)=>{
+    const k=date+'::'+username; let x=dayUser.get(k);
+    if(!x){x={date,username,locationId:loc,activityCount:0,totalRevenue:0,patientCount:null,patientEntered:false,cats:{Laboratory:0,'X-ray':0,Ultrasound:0}};dayUser.set(k,x);}
+    return x;
+  };
+  const ensureBranchDay=(date,loc)=>{
+    const k=date+'::'+loc; let x=branchDay.get(k);
+    if(!x){x={date,locationId:loc,totalRevenue:0,patientCount:0,activeUsers:new Set()};branchDay.set(k,x);}
+    return x;
+  };
+  const addActivity=(date,username,loc,ts,type)=>{
+    if(!date||!username||!locSet.has(loc))return;
+    const u=userByName.get(username); if(!u||!aiUserActiveOn(u,date))return;
+    const k=date+'::'+username; let a=activity.get(k);
+    if(!a){a={date,username,locationId:loc,types:new Set(),count:0};activity.set(k,a);}
+    a.types.add(type);a.count++;
+    const du=ensureUserDay(date,username,loc);du.activityCount++;
+    const bd=ensureBranchDay(date,loc);bd.activeUsers.add(username);
+    if(ts){const mins=aiPkMinutes(ts);if(mins!=null){if(!times.has(username))times.set(username,[]);times.get(username).push(mins);}}
+  };
+  const entriesByMonth=DB.entries||{};
+  for(const mk of Object.keys(entriesByMonth)) for(const e of entriesByMonth[mk]||[]){
+    if(!dateSet.has(e.date)||!userByName.has(e.username)||!locSet.has(e.locationId)||!aiUserActiveOn(userByName.get(e.username),e.date))continue;
+    const cat=(DB.categories||[]).find(c=>c.id===e.catId); const kind=aiCategoryKind(cat);
+    addActivity(e.date,e.username,e.locationId,e.ts||e.createdAt,'entry');
+    const du=ensureUserDay(e.date,e.username,e.locationId);
+    if(cat?.type==='income'){
+      const amount=Number(e.amount||0); du.totalRevenue+=amount;
+      const bd=ensureBranchDay(e.date,e.locationId);bd.totalRevenue+=amount;
+      if(kind)du.cats[kind]+=amount;
+    }
+  }
+  for(const month of Object.keys(DB.onlineEntries||{})) for(const e of DB.onlineEntries[month]||[]) if(dateSet.has(e.date)) addActivity(e.date,e.username,e.locationId,e.ts,'online');
+  for(const month of Object.keys(DB.manualRefundEntries||{})) for(const e of DB.manualRefundEntries[month]||[]) if(dateSet.has(e.date)) addActivity(e.date,e.username,e.locationId,e.ts,'refund');
+  for(const month of Object.keys(DB.ameenEntries||{})) for(const e of DB.ameenEntries[month]||[]) if(dateSet.has(e.date)) addActivity(e.date,e.username,e.locationId,e.ts,'ameen');
+  for(const [cardId,byMonth] of Object.entries(DB.specialCardEntries||{})) if(byMonth&&typeof byMonth==='object'&&!Array.isArray(byMonth)) for(const mk of Object.keys(byMonth)) for(const e of Array.isArray(byMonth[mk])?byMonth[mk]:[]) if(e&&dateSet.has(e.date)) addActivity(e.date,e.username,e.locationId,e.ts||e.createdAt,'special');
+  for(const [k,h] of Object.entries(DB.handovers||{})){
+    const sep=k.indexOf('::');if(sep<0||!h)continue;const date=k.slice(0,sep),username=k.slice(sep+2),u=userByName.get(username);
+    if(dateSet.has(date)&&u&&locSet.has(h.locationId)&&aiUserActiveOn(u,date)) {handovers.set(k,h);addActivity(date,username,h.locationId,h.closedAt,'handover');}
+  }
+  for(const [k,v] of Object.entries(DB.patientCounts||{})){
+    const sep=k.indexOf('::');if(sep<0)continue;const date=k.slice(0,sep),username=k.slice(sep+2),u=userByName.get(username);
+    if(!dateSet.has(date)||!u||!aiUserActiveOn(u,date))continue;
+    const du=ensureUserDay(date,username,u.locationId);du.patientEntered=true;du.patientCount=Number(v||0);
+    const bd=ensureBranchDay(date,u.locationId);bd.patientCount+=Number(v||0);
+    addActivity(date,username,u.locationId,null,'patient-count');
+  }
+  // Build comparable weekday baselines. A user/date only counts as expected if the account
+  // was active on that historical date; disabled staff therefore do not create false alerts.
+  const alerts=[];
+  const weekdays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const locById=new Map(locs.map(l=>[l.id,l]));
+  const baselineUserStats=new Map(), baselineBranchStats=new Map();
+  for(const u of users){
+    const stat={};
+    for(const d of baselineDates){
+      if(!aiUserActiveOn(u,d))continue;
+      const du=dayUser.get(d+'::'+u.username); const w=aiWeekday(d); const key=w;
+      stat[key]??={days:0,activeDays:0,revenue:[],patients:[],cats:{Laboratory:[], 'X-ray':[], Ultrasound:[]},catPresent:{Laboratory:0,'X-ray':0,Ultrasound:0}};
+      const z=stat[key];z.days++;if(du?.activityCount){z.activeDays++;z.revenue.push(du.totalRevenue);if(du.patientEntered)z.patients.push(du.patientCount);for(const k of Object.keys(z.cats)){if(du.cats[k]>0){z.cats[k].push(du.cats[k]);z.catPresent[k]++;}}}
+    }
+    baselineUserStats.set(u.username,stat);
+  }
+  for(const l of locs){const stat={};for(const d of baselineDates){const w=aiWeekday(d),key=w;stat[key]??={days:0,revenue:[],patients:[]};const z=stat[key];z.days++;const bd=branchDay.get(d+'::'+l.id);if(bd){z.revenue.push(bd.totalRevenue);z.patients.push(bd.patientCount);}}baselineBranchStats.set(l.id,stat);}
+  const addAlert=(a)=>alerts.push({...a,locationName:locById.get(a.locationId)?.name||'—'});
+  const today=todayPakistan();
+  // Branch-wide daily revenue / patient-count anomalies.
+  for(const l of locs) for(const d of targetDates){
+    if(d>today)continue; const w=aiWeekday(d),base=baselineBranchStats.get(l.id)?.[w];if(!base||base.revenue.length<3)continue;
+    const actual=branchDay.get(d+'::'+l.id); const med=aiMedian(base.revenue.filter(x=>x>0)); if(!(med>0))continue;
+    if(actual && actual.totalRevenue>0 && actual.totalRevenue<med*0.55){
+      const pMed=aiMedian(base.patients.filter(x=>x>0));
+      const pPart=pMed>0?` Patient Count was ${Math.round(actual.patientCount||0)} versus a comparable-day median of about ${Math.round(pMed)}.`:'';
+      addAlert({date:d,locationId:l.id,username:'',userName:'—',severity:'medium',title:'Unusually low branch revenue',reason:`Branch revenue was Rs ${Math.round(actual.totalRevenue).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()} (around ${Math.round(actual.totalRevenue/med*100)}% of normal).${pPart} This may be genuine low patient volume or missing/incomplete user data; verify against LIS.`});
+    }
+    if(actual && actual.totalRevenue===0 && med>0){const activeComparable=base.revenue.filter(x=>x>0).length;base.activeDays=activeComparable;if(activeComparable>=3){const pMed=aiMedian(base.patients.filter(x=>x>0));const pPart=pMed>0?` Comparable-day patient median is about ${Math.round(pMed)}.`:'';addAlert({date:d,locationId:l.id,username:'',userName:'—',severity:'high',title:'No branch revenue recorded',reason:`Comparable ${weekdays[w]} days normally have revenue; this date has Rs 0.${pPart} This may be a closed/quiet day or missing data. Verify against LIS.`});}}
+  }
+  // User activity, missing users, and data completeness / category anomalies.
+  for(const u of users){
+    const us=baselineUserStats.get(u.username)||{};
+    for(const d of targetDates){
+      if(d>today||!aiUserActiveOn(u,d))continue;
+      const w=aiWeekday(d),base=us[w];if(!base||base.days<3)continue;
+      const du=dayUser.get(d+'::'+u.username); const active=!!du?.activityCount;
+      const rate=base.activeDays/base.days;
+      if(rate>=0.65&&!active){
+        const bd=branchDay.get(d+'::'+u.locationId); if(bd?.activeUsers?.size){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'high',title:'Expected user activity missing',reason:`${u.name} normally records activity on ${base.activeDays} of ${base.days} comparable ${weekdays[w]} days (${aiPct(rate)}%). Other branch activity exists on this date. Verify whether this user's LIS activity is missing.`});}
+        continue;
+      }
+      if(!active)continue;
+      // Patient count completeness: revenue with no/zero patient count is suspicious.
+      if(du.totalRevenue>0 && (!du.patientEntered || du.patientCount===0)){
+        addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'high',title:'Revenue entered but Patient Count is missing/zero',reason:`${u.name} recorded Rs ${Math.round(du.totalRevenue).toLocaleString()} revenue, but Patient Count is ${du.patientEntered?du.patientCount:'not entered'}. Verify this date against LIS.`});
+      }
+      // Patient-count value anomaly against the user's comparable weekday pattern.
+      const patientBase=base.patients.filter(x=>x>0), pmed=aiMedian(patientBase);
+      if(du.patientEntered&&pmed>0&&patientBase.length>=3){
+        if(du.patientCount===0 || du.patientCount<pmed*0.5){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually low Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify whether patient volume was genuinely low or data is incomplete.`});}
+        else if(du.patientCount>pmed*1.8){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually high Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify against LIS if needed.`});}
+      }
+      // Category completeness and amount anomalies. Only categories repeatedly used by this user are expected.
+      for(const cat of ['Laboratory','X-ray','Ultrasound']){
+        const vals=base.cats[cat].filter(x=>x>0),med=aiMedian(vals),presence=base.catPresent[cat]/base.days;
+        const actual=du.cats[cat]||0;
+        if(vals.length>=3&&presence>=0.65){
+          if(actual===0){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:`${cat} entry appears missing`,reason:`${u.name} normally records ${cat} on ${aiPct(presence)}% of comparable ${weekdays[w]} days, with a median around Rs ${Math.round(med).toLocaleString()}. Actual recorded amount: Rs 0. Verify against LIS.`});}
+          else if(med>0&&actual<med*0.5){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:`Unusually low ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS.`});}
+          else if(med>0&&actual>med*1.8){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'low',title:`Unusually high ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS if needed.`});}
+        }
       }
     }
   }
-  for(const [k,h] of Object.entries(DB.handovers||{})){const sep=k.indexOf('::');if(sep<0)continue;const date=k.slice(0,sep),username=k.slice(sep+2);if(dateSet.has(date)&&h&&locSet.has(h.locationId)) {handovers.set(k,h);add(date,username,h.locationId,h.closedAt,'handover');}}
-  for(const [k,v] of Object.entries(DB.patientCounts||{})){const sep=k.indexOf('::');if(sep<0)continue;const date=k.slice(0,sep),username=k.slice(sep+2);if(dateSet.has(date)){const u=staff.find(x=>x.username===username);if(u) add(date,username,u.locationId,null,'patient-count');}}
-  const alerts=[]; const locDateStats=new Map(); const userWeek=new Map();
-  for(const l of locs){for(const d of dates){const has=[...activity.values()].some(a=>a.date===d&&a.locationId===l.id);if(!locDateStats.has(l.id))locDateStats.set(l.id,{});locDateStats.get(l.id)[d]=has;}}
-  for(const u of staff){const key=u.username; const byW={}; for(const d of baselineDates){const w=aiWeekday(d);const active=activity.has(d+'::'+key);byW[w]??={active:0,total:0};byW[w].total++;if(active)byW[w].active++;}userWeek.set(key,byW);}
-  const locById=new Map(locs.map(l=>[l.id,l]));
-  // Branch working-day patterns and missing users.
-  for(const l of locs){const stats=locDateStats.get(l.id)||{};for(const d of targetDates){if(d>todayPakistan())continue;const w=aiWeekday(d);let activeDays=0,totalDays=0;for(const dd of baselineDates){if(aiWeekday(dd)!==w||dd>=todayPakistan())continue;totalDays++;if(stats[dd])activeDays++;}const branchRate=totalDays?activeDays/totalDays:0;const anyActivity=!!stats[d];if(!anyActivity&&totalDays>=3&&branchRate>=0.65){alerts.push({date:d,locationId:l.id,locationName:l.name,username:'',userName:'—',severity:'high',title:'No branch activity detected',reason:`This branch normally has activity on ${Math.round(branchRate*100)}% of comparable ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][w]} days. No user activity was recorded.`});}}
-    for(const u of staff.filter(x=>x.locationId===l.id)){const bw=userWeek.get(u.username)||{};for(const d of targetDates){if(d>todayPakistan())continue;const w=aiWeekday(d),st=bw[w];if(!st||st.total<3||st.active/st.total<0.65)continue;const branchActive=!!stats[d],userActive=activity.has(d+'::'+u.username);if(branchActive&&!userActive){alerts.push({date:d,locationId:l.id,locationName:l.name,username:u.username,userName:u.name,severity:'high',title:'Expected user activity missing',reason:`${u.name} normally records activity on ${st.active} of ${st.total} comparable ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][w]} days (${Math.round(st.active/st.total*100)}%). No activity was found for this date.`});}}}
-  }
   // Unclosed handovers: flag past dates, and current date only late in Pakistan time.
   const now=pakistanDateTime();
-  for(const a of activity.values()){if(!targetSet.has(a.date))continue;const shouldCheck=a.date<now.date || (a.date===now.date&&now.hour>=23);if(!shouldCheck)continue;const key=a.date+'::'+a.username;if(!handovers.has(key)){const l=locById.get(a.locationId);alerts.push({date:a.date,locationId:a.locationId,locationName:l?.name||'—',username:a.username,userName:(staff.find(u=>u.username===a.username)||{}).name||a.username,severity:'high',title:'Handover not closed',reason:'Activity was recorded for this date, but no Cash Handover record was found. Check the date before reconciling with LIS.'});}}
-  // Unusual time: compare each user's activity times against their median circularly.
-  for(const u of staff){const arr=times.get(u.username)||[];if(arr.length<6)continue;const median=[...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)];for(const a of activity.values()){if(!targetSet.has(a.date)||a.username!==u.username||a.date>todayPakistan())continue;const key=a.date+'::'+u.username;const relevant=[...activity.values()].filter(x=>x.username===u.username&&x.date===a.date);const mins=[];for(const e of (DB.entries[a.date.slice(0,7)]||[]))if(e.date===a.date&&e.username===u.username){const m=aiPkMinutes(e.ts||e.createdAt);if(m!=null)mins.push(m)};if(!mins.length)continue;const closest=Math.min(...mins.map(m=>aiCircularDistance(m,median)));if(closest>240){const l=locById.get(u.locationId);alerts.push({date:a.date,locationId:u.locationId,locationName:l?.name||'—',username:u.username,userName:u.name,severity:'medium',title:'Unusual entry time',reason:`Typical activity is around ${aiFmtMinutes(median)} Pakistan time; recorded activity was around ${aiFmtMinutes(mins[0])}. Verify this date if needed.`});break;}}}
-  const rank={high:0,medium:1,low:2};alerts.sort((a,b)=>a.date.localeCompare(b.date)||rank[a.severity]-rank[b.severity]||String(a.locationName).localeCompare(String(b.locationName)));
-  const dedup=new Map();for(const a of alerts){const k=[a.date,a.locationId,a.username,a.title].join('|');if(!dedup.has(k))dedup.set(k,a);}const final=[...dedup.values()];const counts={high:final.filter(a=>a.severity==='high').length,medium:final.filter(a=>a.severity==='medium').length,low:final.filter(a=>a.severity==='low').length};
+  for(const a of activity.values()){
+    if(!targetSet.has(a.date))continue;
+    const shouldCheck=a.date<now.date || (a.date===now.date&&now.hour>=23);if(!shouldCheck)continue;
+    const u=userByName.get(a.username);if(!u||!aiUserActiveOn(u,a.date))continue;
+    const key=a.date+'::'+a.username;if(!handovers.has(key)){addAlert({date:a.date,locationId:a.locationId,username:a.username,userName:u.name,severity:'high',title:'Handover not closed',reason:'Activity was recorded for this date, but no Cash Handover record was found. Verify the date before reconciling with LIS.'});}
+  }
+  // Unusual entry time: use only the 30-day historical baseline, not the target date itself.
+  for(const u of users){
+    const arr=[];
+    for(const mk of Object.keys(DB.entries||{})) for(const e of DB.entries[mk]||[]){
+      if(e.username!==u.username||!baselineDates.includes(e.date)||!aiUserActiveOn(u,e.date))continue;
+      const m=aiPkMinutes(e.ts||e.createdAt);if(m!=null)arr.push(m);
+    }
+    if(arr.length<6)continue; const median=aiMedian(arr);
+    for(const d of targetDates){
+      if(d>today||!aiUserActiveOn(u,d))continue;
+      const mins=[];for(const e of (DB.entries[d.slice(0,7)]||[]))if(e.date===d&&e.username===u.username){const m=aiPkMinutes(e.ts||e.createdAt);if(m!=null)mins.push(m);}
+      if(!mins.length)continue; const closest=Math.min(...mins.map(m=>aiCircularDistance(m,median)));
+      if(closest>240){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusual entry time',reason:`Typical activity is around ${aiFmtMinutes(median)} Pakistan time; recorded activity was around ${aiFmtMinutes(mins[0])}. Verify this date if needed.`});}
+    }
+  }
+  const rank={high:0,medium:1,low:2};alerts.sort((a,b)=>a.date.localeCompare(b.date)||rank[a.severity]-rank[b.severity]||String(a.locationName).localeCompare(String(b.locationName))||String(a.username).localeCompare(String(b.username)));
+  const dedup=new Map();for(const a of alerts){const k=[a.date,a.locationId,a.username,a.title].join('|');if(!dedup.has(k))dedup.set(k,a);}const final=[...dedup.values()];
+  const counts={high:final.filter(a=>a.severity==='high').length,medium:final.filter(a=>a.severity==='medium').length,low:final.filter(a=>a.severity==='low').length};
   return {from,to,baselineFrom,baselineDays:30,locationId,checkedDays:targetDates.length,counts,alerts:final,generatedAt:Date.now(),generatedAtLabel:new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'})};
 }
 
