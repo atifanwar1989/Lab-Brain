@@ -951,7 +951,17 @@ function aiActivityCheck({from,to,locationId='all'}){
   for(const [k,v] of Object.entries(DB.onlineEntries||{})) for(const e of v||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'online');
   for(const [k,v] of Object.entries(DB.manualRefundEntries||{})) for(const e of v||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'refund');
   for(const mk of Object.keys(DB.ameenEntries||{})) for(const e of DB.ameenEntries[mk]||[]) if(dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'ameen');
-  for(const card of DB.specialCards||[]) for(const mk of Object.keys(DB.specialCardEntries||{})) for(const e of (DB.specialCardEntries[mk]||[])) if(e.cardId===card.id&&dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts,'special');
+  // Generic special-card entries are stored as: specialCardEntries[cardId][month] -> entries[].
+  // Keep the AI scan defensive so one malformed/legacy record cannot abort the whole analysis.
+  for(const [cardId, byMonth] of Object.entries(DB.specialCardEntries||{})){
+    if(!byMonth || typeof byMonth!=='object' || Array.isArray(byMonth)) continue;
+    for(const mk of Object.keys(byMonth)){
+      const rows=Array.isArray(byMonth[mk])?byMonth[mk]:[];
+      for(const e of rows){
+        if(e && e.cardId===cardId && dateSet.has(e.date)) add(e.date,e.username,e.locationId,e.ts||e.createdAt,'special');
+      }
+    }
+  }
   for(const [k,h] of Object.entries(DB.handovers||{})){const sep=k.indexOf('::');if(sep<0)continue;const date=k.slice(0,sep),username=k.slice(sep+2);if(dateSet.has(date)&&h&&locSet.has(h.locationId)) {handovers.set(k,h);add(date,username,h.locationId,h.closedAt,'handover');}}
   for(const [k,v] of Object.entries(DB.patientCounts||{})){const sep=k.indexOf('::');if(sep<0)continue;const date=k.slice(0,sep),username=k.slice(sep+2);if(dateSet.has(date)){const u=staff.find(x=>x.username===username);if(u) add(date,username,u.locationId,null,'patient-count');}}
   const alerts=[]; const locDateStats=new Map(); const userWeek=new Map();

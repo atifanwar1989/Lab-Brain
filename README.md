@@ -143,8 +143,14 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Existing data and configuration are preserved; no transactional reset.
 
 
-## V61
+## V62
 - Correctly integrates the V60 frontend changes into the served `public/index.html`.
 - Adds the Reports > AI Activity Check UI to the actual deployed frontend.
 - Preserves the existing V60 server-side AI endpoint, patient-count validation, and print/handover logic.
 - No transactional data reset or migration is performed.
+
+
+## V62
+- Fixed AI Activity Check crash caused by nested generic special-card entry storage.
+- AI scan now safely reads `specialCardEntries[cardId][month]` and ignores malformed legacy rows instead of failing the whole check.
+- Existing transactional data and V61/V59 functionality are preserved; no reset or deletion is performed.
