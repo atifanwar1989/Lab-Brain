@@ -950,6 +950,7 @@ app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
 });
 
 app.get('/api/ai-activity-check', auth, managementOnly, (req,res)=>{ const from=String(req.query.from||'').slice(0,10), to=String(req.query.to||'').slice(0,10), locationId=String(req.query.locationId||'all'); if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)||from>to)return res.status(400).json({error:'Valid From and To dates are required.'}); if((new Date(to+'T12:00:00Z')-new Date(from+'T12:00:00Z'))/86400000>366)return res.status(400).json({error:'Please check a maximum of 12 months at a time.'}); if(locationId!=='all'&&!((DB.locations||[]).some(l=>l.id===locationId)))return res.status(400).json({error:'Invalid branch.'}); try{res.json(aiActivityCheck({from,to,locationId}));}catch(e){console.error('AI activity check failed:',e);res.status(500).json({error:'AI Activity Check could not be completed.'});} });
+app.post('/api/ai-activity-review', auth, managementOnly, async (req,res)=>{ const key=String(req.body?.alertKey||'').trim(); if(!key)return res.status(400).json({error:'Alert key is required.'}); DB.aiReviewedAlerts=DB.aiReviewedAlerts||{}; DB.aiReviewedAlerts[key]={reviewedBy:req.user.username,reviewedByName:req.user.name,reviewedAt:Date.now()}; try{await persist();res.json({ok:true,alertKey:key});}catch(e){console.error('AI alert review save failed:',e);res.status(500).json({error:'Could not save AI alert review.'});} });
 
 function aiDateList(from,to){ const out=[]; const d=new Date(from+'T12:00:00Z'), end=new Date(to+'T12:00:00Z'); while(d<=end){out.push(d.toISOString().slice(0,10));d.setUTCDate(d.getUTCDate()+1)} return out; }
 function aiWeekday(date){ return new Date(date+'T12:00:00Z').getUTCDay(); }
@@ -1094,8 +1095,8 @@ function aiActivityCheck({from,to,locationId='all'}){
       // Patient-count value anomaly against the user's comparable weekday pattern.
       const patientBase=base.patients.filter(x=>x>0), pmed=aiMedian(patientBase);
       if(du.patientEntered&&pmed>0&&patientBase.length>=3){
-        if(du.patientCount===0 || du.patientCount<pmed*0.5){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually low Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify whether patient volume was genuinely low or data is incomplete.`});}
-        else if(du.patientCount>pmed*1.8){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually high Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify against LIS if needed.`});}
+        if(du.patientCount===0 || (du.patientCount<pmed*0.5 && Math.abs(du.patientCount-pmed)>=5)){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually low Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify whether patient volume was genuinely low or data is incomplete.`});}
+        else if(du.patientCount>pmed*2.0 && Math.abs(du.patientCount-pmed)>=5){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually high Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify against LIS if needed.`});}
       }
       // Category completeness and amount anomalies. Only categories repeatedly used by this user are expected.
       for(const cat of ['Laboratory','X-ray','Ultrasound']){
@@ -1103,8 +1104,8 @@ function aiActivityCheck({from,to,locationId='all'}){
         const actual=du.cats[cat]||0;
         if(vals.length>=3&&presence>=0.65){
           if(actual===0){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:`${cat} entry appears missing`,reason:`${u.name} normally records ${cat} on ${aiPct(presence)}% of comparable ${weekdays[w]} days, with a median around Rs ${Math.round(med).toLocaleString()}. Actual recorded amount: Rs 0. Verify against LIS.`});}
-          else if(med>0&&actual<med*0.5){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:`Unusually low ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS.`});}
-          else if(med>0&&actual>med*1.8){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'low',title:`Unusually high ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS if needed.`});}
+          else if(med>0&&actual<med*0.5&&Math.abs(actual-med)>=1000){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:`Unusually low ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS.`});}
+          else if(med>0&&actual>med*2.0&&Math.abs(actual-med)>=1000){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'low',title:`Unusually high ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS if needed.`});}
         }
       }
     }
@@ -1132,8 +1133,31 @@ function aiActivityCheck({from,to,locationId='all'}){
       if(closest>240){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusual entry time',reason:`Typical activity is around ${aiFmtMinutes(median)} Pakistan time; recorded activity was around ${aiFmtMinutes(mins[0])}. Verify this date if needed.`});}
     }
   }
-  const rank={high:0,medium:1,low:2};alerts.sort((a,b)=>a.date.localeCompare(b.date)||rank[a.severity]-rank[b.severity]||String(a.locationName).localeCompare(String(b.locationName))||String(a.username).localeCompare(String(b.username)));
-  const dedup=new Map();for(const a of alerts){const k=[a.date,a.locationId,a.username,a.title].join('|');if(!dedup.has(k))dedup.set(k,a);}const final=[...dedup.values()];
+  // Reduce noise before presenting results: combine multiple factors for the same user/date
+  // into one actionable alert, while keeping branch-wide alerts separate.
+  const sevRank={high:0,medium:1,low:2};
+  const grouped=new Map();
+  for(const a of alerts){
+    const key=[a.date,a.locationId,a.username||'__branch__'].join('|');
+    let g=grouped.get(key);
+    if(!g){
+      g={date:a.date,locationId:a.locationId,locationName:a.locationName,username:a.username||'',userName:a.userName||'—',severity:a.severity,title:a.title,reason:a.reason,factors:[]};
+      grouped.set(key,g);
+    }
+    g.factors.push({title:a.title,severity:a.severity,reason:a.reason});
+    if(sevRank[a.severity]<sevRank[g.severity])g.severity=a.severity;
+  }
+  const reviewed=DB.aiReviewedAlerts||{};
+  const final=[...grouped.values()].map(g=>{
+    const key=[g.date,g.locationId,g.username||'__branch__'].join('|');
+    if(g.factors.length>1){
+      g.title='Multiple factors require review';
+      g.reason=g.factors.map(f=>`• ${f.title}: ${f.reason}`).join('\n');
+    }
+    g.alertKey=key;
+    return g;
+  }).filter(g=>!reviewed[g.alertKey]);
+  final.sort((a,b)=>a.date.localeCompare(b.date)||sevRank[a.severity]-sevRank[b.severity]||String(a.locationName).localeCompare(String(b.locationName))||String(a.username).localeCompare(String(b.username)));
   const counts={high:final.filter(a=>a.severity==='high').length,medium:final.filter(a=>a.severity==='medium').length,low:final.filter(a=>a.severity==='low').length};
   return {from,to,baselineFrom,baselineDays:30,locationId,checkedDays:targetDates.length,counts,alerts:final,generatedAt:Date.now(),generatedAtLabel:new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'})};
 }
