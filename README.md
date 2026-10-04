@@ -1,3 +1,13 @@
+## V67 — Settings & Employee Management UI Update
+- Redesigned Settings → Employees List into a compact searchable interface with Add Employee popup, View/Edit/Delete and Disable/Enable controls.
+- Added employee master details: Full Name, Department, Designation, Date of Joining and Account Number.
+- Added employee location filter and search; disabled/removed employees are kept out of active salary/loan processing while historical salary records remain preserved.
+- Added Designation to Employee Profile & Salary Setup.
+- Salary slips now include Designation, Date of Joining and Account Number when available.
+- Redesigned Staff, Reviewer & Admin Accounts into a compact searchable/filterable section with Add Account popup.
+- Added search boxes to long Settings sections and finance setup lists to make long lists easier to find.
+- Existing data, salary records, loans, financial dashboard calculations and other Lab-Brain functionality are preserved. No transactional reset is performed.
+
 
 
 ## V66 — Salary & Loan Processing Update

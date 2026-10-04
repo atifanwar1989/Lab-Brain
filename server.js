@@ -102,7 +102,7 @@ app.get('/api/config', auth, (req, res) => {
     id: u.id, name: u.name, username: u.username, role: u.role, locationId: u.locationId || null,
     active: u.active !== false, statusHistory: Array.isArray(u.statusHistory) ? u.statusHistory : []
   }));
-  res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], specialCards: DB.specialCards || [], staff, employeeProfiles: DB.employeeProfiles || [], fixedExpenseCategories: DB.fixedExpenseCategories || [] });
+  res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], specialCards: DB.specialCards || [], staff, employeeProfiles: DB.employeeProfiles || [], employeeDetails: DB.employeeDetails || {}, fixedExpenseCategories: DB.fixedExpenseCategories || [] });
 });
 app.put('/api/config/categories', auth, adminOnly, async (req, res) => {
   DB.categories = Array.isArray(req.body.categories) ? req.body.categories : [];
@@ -139,6 +139,9 @@ app.put('/api/config/special-cards', auth, adminOnly, async (req, res) => {
 // ---------------- Employee Salary & Fixed Expense Management ----------------
 function ensureFinanceConfig() {
   DB.employeeProfiles = Array.isArray(DB.employeeProfiles) ? DB.employeeProfiles : [];
+  DB.employeeDetails = DB.employeeDetails && typeof DB.employeeDetails === 'object' ? DB.employeeDetails : {};
+  for(const p of DB.employeeProfiles){ if(p?.employee && !DB.employeeDetails[p.employee]) DB.employeeDetails[p.employee]={employee:p.employee,department:p.department||'ALL',designation:p.designation||'',dateOfJoining:p.dateOfJoining||'',accountNumber:p.accountNumber||'',active:p.active!==false}; }
+  for(const name of (DB.employees||[])){ if(name && !DB.employeeDetails[name]) DB.employeeDetails[name]={employee:name,active:true}; }
   DB.fixedExpenseCategories = Array.isArray(DB.fixedExpenseCategories) ? DB.fixedExpenseCategories : [];
   DB.fixedExpenses = DB.fixedExpenses && typeof DB.fixedExpenses === 'object' ? DB.fixedExpenses : {};
   DB.salaryRecords = DB.salaryRecords && typeof DB.salaryRecords === 'object' ? DB.salaryRecords : {};
@@ -207,7 +210,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   ensureFinanceConfig();
   const month=String(req.query.month||'').slice(0,7);
   const locationId=String(req.query.locationId||'all');
-  const employees=(DB.employeeProfiles||[]).filter(p=>locationId==='all'||p.locationId===locationId);
+  const employees=(DB.employeeProfiles||[]).filter(p=>p.active!==false&&(locationId==='all'||p.locationId===locationId));
   const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec}}; });
   const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
   const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
@@ -240,7 +243,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   for(const loc of (DB.locations||[])) {
     if(locationId!=='all' && loc.id!==locationId) continue;
     const revenue=departments.reduce((sum,dep)=>sum+Number(revMap[loc.id+'::'+dep]||0),0);
-    const salary=(DB.employeeProfiles||[]).filter(p=>p.active!==false&&p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
+    const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];if(p.active===false&&!r)return sum;return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
     const utilities=(fixed||[]).filter(f=>f.locationId===loc.id).reduce((sum,f)=>sum+Number(f.amount||0),0);
     const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0};
     const vendor=Number(adj.vendorPayment||0), referral=Number(adj.referralDoctorShare||0), cash=Number(cashExpenseMap[loc.id]||0);
@@ -251,10 +254,64 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   for(const p of DB.employeeProfiles||[]){ if(DB.employeeLoans?.[p.employee]){ const l=loanForMonth(p.employee,month); const saved=DB.salaryRecords?.[salaryKey(month,p.employee)]; loanBalances[p.employee]=Math.max(0,Number(l.remaining||0)-Number(saved?.loanDeduction||0)); } }
   res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, salaryRecords:DB.salaryRecords||{}, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, financeAdjustments:adjustments, employeeLoans:DB.employeeLoans||{}, loanBalances, departmentSummary, financialSummary });
 });
+app.post('/api/config/employee', auth, adminOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const name=String(req.body.name||'').trim();
+  if(!name) return res.status(400).json({error:'Employee full name is required.'});
+  if((DB.employees||[]).some(x=>String(x).trim().toLowerCase()===name.toLowerCase())) return res.status(400).json({error:'Employee already exists.'});
+  DB.employees=Array.isArray(DB.employees)?DB.employees:[];
+  DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
+  DB.employees.push(name);
+  DB.employeeDetails[name]={employee:name,department:String(req.body.department||'ALL').trim()||'ALL',designation:String(req.body.designation||'').trim(),dateOfJoining:String(req.body.dateOfJoining||'').slice(0,10),accountNumber:String(req.body.accountNumber||'').trim(),active:true,createdAt:Date.now()};
+  try{await persist();res.json({ok:true,employees:DB.employees,employeeDetails:DB.employeeDetails});}catch(e){console.error(e);res.status(500).json({error:'Could not save employee.'});}
+});
+app.put('/api/config/employee/:name', auth, adminOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const oldName=String(req.params.name||'').trim();
+  const idx=(DB.employees||[]).findIndex(x=>x===oldName);
+  if(idx<0) return res.status(404).json({error:'Employee not found.'});
+  const newName=String(req.body.name||oldName).trim();
+  if(!newName) return res.status(400).json({error:'Employee full name is required.'});
+  if(newName!==oldName && (DB.employees||[]).some(x=>String(x).trim().toLowerCase()===newName.toLowerCase())) return res.status(400).json({error:'Another employee already has this name.'});
+  const oldProfile=(DB.employeeProfiles||[]).find(p=>p.employee===oldName)||null;
+  const oldDetail=DB.employeeDetails?.[oldName]||{};
+  const detail={...oldDetail,employee:newName,department:String(req.body.department!==undefined?req.body.department:(oldDetail.department||oldProfile?.department||'ALL')).trim()||'ALL',designation:String(req.body.designation!==undefined?req.body.designation:(oldDetail.designation||'')).trim(),dateOfJoining:String(req.body.dateOfJoining!==undefined?req.body.dateOfJoining:(oldDetail.dateOfJoining||'')).slice(0,10),accountNumber:String(req.body.accountNumber!==undefined?req.body.accountNumber:(oldDetail.accountNumber||'')).trim()};
+  DB.employees[idx]=newName;
+  DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
+  delete DB.employeeDetails[oldName]; DB.employeeDetails[newName]=detail;
+  if(oldProfile){oldProfile.employee=newName; if(req.body.department!==undefined && ['Laboratory','X-Ray','Ultrasound','ALL'].includes(req.body.department)) oldProfile.department=req.body.department;}
+  if(DB.employeeLoans?.[oldName]){DB.employeeLoans[newName]={...DB.employeeLoans[oldName],employee:newName};delete DB.employeeLoans[oldName];}
+  const migrated={};
+  for(const [key,rec] of Object.entries(DB.salaryRecords||{})){
+    if(rec?.employee===oldName){const month=String(rec.month||key.split('::')[0]);const nk=salaryKey(month,newName);migrated[nk]={...rec,employee:newName};} else migrated[key]=rec;
+  }
+  DB.salaryRecords=migrated;
+  try{await persist();res.json({ok:true,employees:DB.employees,employeeDetails:DB.employeeDetails,employeeProfiles:DB.employeeProfiles||[],employeeLoans:DB.employeeLoans||{}});}catch(e){console.error(e);res.status(500).json({error:'Could not update employee.'});}
+});
+app.put('/api/config/employee/:name/status', auth, adminOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const name=String(req.params.name||'').trim(), active=req.body.active!==false;
+  if(!(DB.employees||[]).some(x=>x===name)) return res.status(404).json({error:'Employee not found.'});
+  DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
+  DB.employeeDetails[name]={...(DB.employeeDetails[name]||{employee:name}),employee:name,active};
+  const p=(DB.employeeProfiles||[]).find(x=>x.employee===name); if(p) p.active=active;
+  try{await persist();res.json({ok:true,employeeDetails:DB.employeeDetails,employeeProfiles:DB.employeeProfiles||[]});}catch(e){console.error(e);res.status(500).json({error:'Could not update employee status.'});}
+});
+app.delete('/api/config/employee/:name', auth, adminOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const name=String(req.params.name||'').trim();
+  if(!(DB.employees||[]).some(x=>x===name)) return res.status(404).json({error:'Employee not found.'});
+  // Remove only the active master entry. Historical salary records, loans and other records remain intact.
+  DB.employees=DB.employees.filter(x=>x!==name);
+  DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
+  DB.employeeDetails[name]={...(DB.employeeDetails[name]||{employee:name}),employee:name,active:false,deletedAt:Date.now()};
+  const p=(DB.employeeProfiles||[]).find(x=>x.employee===name); if(p) p.active=false;
+  try{await persist();res.json({ok:true,employees:DB.employees,employeeDetails:DB.employeeDetails,employeeProfiles:DB.employeeProfiles||[]});}catch(e){console.error(e);res.status(500).json({error:'Could not remove employee.'});}
+});
 app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
   const incoming=Array.isArray(req.body.employeeProfiles)?req.body.employeeProfiles:[];
-  DB.employeeProfiles=incoming.map(p=>({employee:String(p.employee||'').trim(),locationId:String(p.locationId||''),department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(p.department)?p.department:'ALL',salary:Math.max(0,Number(p.salary||0)),sickLeaveEntitlement:Math.max(0,Number(p.sickLeaveEntitlement||0)),casualLeaveEntitlement:Math.max(0,Number(p.casualLeaveEntitlement||0)),annualLeaveEntitlement:Math.max(0,Number(p.annualLeaveEntitlement||0)),active:p.active!==false})).filter(p=>p.employee&&p.locationId);
+  DB.employeeProfiles=incoming.map(p=>({employee:String(p.employee||'').trim(),locationId:String(p.locationId||''),department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(p.department)?p.department:'ALL',designation:String(p.designation||'').trim(),dateOfJoining:String(p.dateOfJoining||'').slice(0,10),accountNumber:String(p.accountNumber||'').trim(),salary:Math.max(0,Number(p.salary||0)),sickLeaveEntitlement:Math.max(0,Number(p.sickLeaveEntitlement||0)),casualLeaveEntitlement:Math.max(0,Number(p.casualLeaveEntitlement||0)),annualLeaveEntitlement:Math.max(0,Number(p.annualLeaveEntitlement||0)),active:p.active!==false})).filter(p=>p.employee&&p.locationId);
   try{await persist();res.json({ok:true,employeeProfiles:DB.employeeProfiles});}catch(e){console.error(e);res.status(500).json({error:'Could not save employee profiles.'});}
 });
 app.put('/api/config/fixed-expense-categories', auth, managementOnly, async (req,res)=>{
