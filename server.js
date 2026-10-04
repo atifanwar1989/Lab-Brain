@@ -152,17 +152,28 @@ function fixedExpenseKey(month, categoryId) { return `${month}::${categoryId}`; 
 function financeAdjustmentKey(month, locationId, type) { return `${month}::${locationId}::${type}`; }
 function loanForMonth(employee, month) {
   const loan=DB.employeeLoans?.[employee];
-  if(!loan) return {amount:0, installment:0, remaining:0, startMonth:''};
+  if(!loan) return {amount:0, installment:0, remaining:0, startMonth:'', paidInstallments:0};
   const amount=Math.max(0,Number(loan.amount||0));
   const installment=Math.max(0,Number(loan.installment||0));
   const start=String(loan.startMonth||'').slice(0,7);
-  if(!amount || !installment || !/^\d{4}-\d{2}$/.test(start) || month<start) return {amount, installment:0, remaining:Math.max(0,amount), startMonth:start};
-  const priorMonths=[];
+  if(!amount || !installment || !/^\d{4}-\d{2}$/.test(start) || month<start) return {amount, installment:0, remaining:Math.max(0,amount), startMonth:start, paidInstallments:Math.max(0,Math.floor(Number(loan.paidInstallments||0)))};
+  const hasSetupPaid=Object.prototype.hasOwnProperty.call(loan,'paidInstallments');
+  let actualPaid=Math.max(0,Math.floor(Number(loan.paidInstallments||0)))*installment;
   let cur=start;
-  while(cur<month && priorMonths.length<240){ priorMonths.push(cur); cur=monthAddServer(cur,1); }
-  const paid=Math.min(amount, priorMonths.length*installment);
-  const remaining=Math.max(0,amount-paid);
-  return {amount, installment:remaining>0?Math.min(installment,remaining):0, remaining, startMonth:start};
+  while(cur<month){
+    const key=salaryKey(cur,employee);
+    const saved=DB.salaryRecords?.[key];
+    if(hasSetupPaid){
+      if(saved) actualPaid+=Math.max(0,Number(saved.loanDeduction||0));
+    }else{
+      // Legacy loan records have no paid-installment count. Prefer actual saved deductions;
+      // if no salary record exists for a prior month, preserve the old planned-installment behaviour.
+      actualPaid+=saved?Math.max(0,Number(saved.loanDeduction||0)):installment;
+    }
+    cur=monthAddServer(cur,1);
+  }
+  const remaining=Math.max(0,amount-actualPaid);
+  return {amount, installment:remaining>0?Math.min(installment,remaining):0, remaining, startMonth:start, paidInstallments:Math.max(0,Math.floor(Number(loan.paidInstallments||0)))};
 }
 function monthAddServer(month,n){ const [y,m]=String(month).split('-').map(Number); const d=new Date(y,m-1+n,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
 function daysInMonthServer(month) { const [y,m]=String(month).split('-').map(Number); return new Date(y,m,0).getDate(); }
@@ -187,7 +198,8 @@ function calculateSalary(month, profile, input={}) {
   const manualDeduction=Math.max(0,Number(input.manualDeduction||0));
   const advance=Number(input.advanceSalary ?? advanceSalaryFor(month, profile.employee, profile.locationId));
   const loan=loanForMonth(profile.employee,month);
-  const loanDeduction=Number(input.loanDeduction ?? loan.installment);
+  const requestedLoanDeduction=Math.max(0,Number(input.loanDeduction ?? loan.installment));
+  const loanDeduction=Math.min(requestedLoanDeduction,Math.max(0,loan.remaining));
   const net=Math.max(0,basic-advance-manualDeduction-loanDeduction);
   return {basicSalary:basic,advanceSalary:advance,absentDays,sickLeave,casualLeave,annualLeave,lateDays,absentDeduction:0,manualDeduction,loanDeduction,loanRemainingAfter:Math.max(0,loan.remaining-loanDeduction),netSalary:net};
 }
@@ -196,7 +208,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   const month=String(req.query.month||'').slice(0,7);
   const locationId=String(req.query.locationId||'all');
   const employees=(DB.employeeProfiles||[]).filter(p=>locationId==='all'||p.locationId===locationId);
-  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=old?calculateSalary(month,p,{absentDays:old.absentDays,sickLeave:old.sickLeave,casualLeave:old.casualLeave,annualLeave:old.annualLeave,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary}):null; return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), record:rec?{...old,...rec}:null}; });
+  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec}}; });
   const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
   const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
   const adjustments=[];
@@ -213,7 +225,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+Number(e.amount||0);
   }
   const salaryMap={};
-  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const calc=r?Number(r.netSalary||0):0; const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc; }
+  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const calc=r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0); const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc; }
   const fixedMap={};
   for(const f of fixed) { const k=f.locationId+'::'+f.department; fixedMap[k]=(fixedMap[k]||0)+Number(f.amount||0); }
   const cashExpenseMap={};
@@ -228,14 +240,16 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   for(const loc of (DB.locations||[])) {
     if(locationId!=='all' && loc.id!==locationId) continue;
     const revenue=departments.reduce((sum,dep)=>sum+Number(revMap[loc.id+'::'+dep]||0),0);
-    const salary=(DB.employeeProfiles||[]).filter(p=>p.active!==false&&p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];return sum+Number(r?.netSalary||0)},0);
+    const salary=(DB.employeeProfiles||[]).filter(p=>p.active!==false&&p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
     const utilities=(fixed||[]).filter(f=>f.locationId===loc.id).reduce((sum,f)=>sum+Number(f.amount||0),0);
     const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0};
     const vendor=Number(adj.vendorPayment||0), referral=Number(adj.referralDoctorShare||0), cash=Number(cashExpenseMap[loc.id]||0);
     const net=revenue-salary-utilities-vendor-referral-cash;
     financialSummary.push({locationId:loc.id,location:loc.name,revenue,salary,utilities,vendor,referral,cash,net});
   }
-  res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, salaryRecords:DB.salaryRecords||{}, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, financeAdjustments:adjustments, employeeLoans:DB.employeeLoans||{}, departmentSummary, financialSummary });
+  const loanBalances={};
+  for(const p of DB.employeeProfiles||[]){ if(DB.employeeLoans?.[p.employee]){ const l=loanForMonth(p.employee,month); const saved=DB.salaryRecords?.[salaryKey(month,p.employee)]; loanBalances[p.employee]=Math.max(0,Number(l.remaining||0)-Number(saved?.loanDeduction||0)); } }
+  res.json({ employeeProfiles:DB.employeeProfiles||[], employees:DB.employees||[], salaries, salaryRecords:DB.salaryRecords||{}, fixedExpenseCategories:fixedCategories, fixedExpenses:fixed, financeAdjustments:adjustments, employeeLoans:DB.employeeLoans||{}, loanBalances, departmentSummary, financialSummary });
 });
 app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
@@ -254,7 +268,9 @@ app.put('/api/finance-management/salary', auth, managementOnly, async (req,res)=
   const month=String(req.body.month||'').slice(0,7), employee=String(req.body.employee||'').trim();
   const profile=DB.employeeProfiles.find(p=>p.employee===employee&&p.active!==false);
   if(!/^\d{4}-\d{2}$/.test(month)||!profile)return res.status(400).json({error:'Valid month and employee profile are required.'});
-  const calc=calculateSalary(month,profile,req.body);
+  const body={...req.body};
+  if(body.loanDeduction!==undefined) body.loanDeduction=Math.max(0,Number(body.loanDeduction||0));
+  const calc=calculateSalary(month,profile,body);
   DB.salaryRecords[salaryKey(month,employee)]={month,employee,locationId:profile.locationId,department:profile.department,...calc,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
   try{await persist();res.json({ok:true,record:DB.salaryRecords[salaryKey(month,employee)]});}catch(e){console.error(e);res.status(500).json({error:'Could not save salary record.'});}
 });
@@ -265,9 +281,10 @@ app.put('/api/finance-management/employee-loan', auth, managementOnly, async (re
   if(!profile)return res.status(400).json({error:'Valid employee profile is required.'});
   const amount=Math.max(0,Number(req.body.amount||0));
   const installment=Math.max(0,Number(req.body.installment||0));
-  const startMonth=String(req.body.startMonth||'').slice(0,7);
-  if(amount<=0 || installment<=0 || !/^\d{4}-\d{2}$/.test(startMonth)) return res.status(400).json({error:'Loan amount, monthly installment and start month are required.'});
-  DB.employeeLoans[employee]={employee,amount,installment,startMonth,remarks:String(req.body.remarks||'').trim(),updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  const paidInstallments=Math.max(0,Math.floor(Number(req.body.paidInstallments||0)));
+  const startMonth=String(req.body.startMonth||new Date().toISOString().slice(0,7)).slice(0,7);
+  if(amount<=0 || installment<=0 || !/^\d{4}-\d{2}$/.test(startMonth) || paidInstallments>Math.ceil(amount/installment)) return res.status(400).json({error:'Valid loan amount, installment and paid installments are required.'});
+  DB.employeeLoans[employee]={employee,amount,installment,paidInstallments,startMonth,remarks:String(req.body.remarks||'').trim(),updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
   try{await persist();res.json({ok:true,employeeLoans:DB.employeeLoans});}catch(e){console.error(e);res.status(500).json({error:'Could not save employee loan.'});}
 });
 app.delete('/api/finance-management/employee-loan/:employee', auth, managementOnly, async (req,res)=>{

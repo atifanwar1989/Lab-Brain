@@ -1,3 +1,15 @@
+
+
+## V66 — Salary & Loan Processing Update
+- Replaced Leave Entitlement setup with Loan Setup only.
+- Loan Setup uses Employee, Loan Amount, Monthly Installment, Installments Already Paid, Remaining Loan and optional remarks.
+- Monthly Salary Processing columns are now Employee, Basic Salary, Advance, Absent, Late, Deduction, Loan Deduction, Remaining Loan, Net Salary and Salary Slip.
+- Salary input values auto-save after editing; no per-row Save button is required.
+- Loan deduction defaults to the planned installment but remains editable and is included in Net Salary.
+- Net Salary and Remaining Loan update immediately while typing.
+- Employees with no monthly salary record still use configured Basic Salary and planned loan deduction for Net Salary and Financial Dashboard calculations.
+- Financial Dashboard salary expense now automatically reflects calculated salaries even before a monthly row is manually edited.
+- Existing leave/loan records and other Lab-Brain functionality are preserved; no transactional reset is performed.
 # Lab-Brain V36
 
 V26 is based on V25 and preserves the existing configuration model and business features.
