@@ -1061,7 +1061,7 @@ function aiActivityCheck({from,to,locationId='all'}){
     }
     baselineUserStats.set(u.username,stat);
   }
-  for(const l of locs){const stat={};for(const d of baselineDates){const w=aiWeekday(d),key=w;stat[key]??={days:0,revenue:[],patients:[]};const z=stat[key];z.days++;const bd=branchDay.get(d+'::'+l.id);if(bd){z.revenue.push(bd.totalRevenue);z.patients.push(bd.patientCount);}}baselineBranchStats.set(l.id,stat);}
+  for(const l of locs){const stat={};for(const d of baselineDates){const w=aiWeekday(d),key=w;stat[key]??={days:0,activeDays:0,revenue:[],patients:[]};const z=stat[key];z.days++;const bd=branchDay.get(d+'::'+l.id);if(bd){z.revenue.push(bd.totalRevenue);z.patients.push(bd.patientCount);if(bd.activeUsers?.size||bd.totalRevenue>0)z.activeDays++;}}baselineBranchStats.set(l.id,stat);}
   const addAlert=(a)=>alerts.push({...a,locationName:locById.get(a.locationId)?.name||'—'});
   const today=todayPakistan();
   // Branch-wide daily revenue / patient-count anomalies.
@@ -1084,7 +1084,20 @@ function aiActivityCheck({from,to,locationId='all'}){
       const du=dayUser.get(d+'::'+u.username); const active=!!du?.activityCount;
       const rate=base.activeDays/base.days;
       if(rate>=0.65&&!active){
-        const bd=branchDay.get(d+'::'+u.locationId); if(bd?.activeUsers?.size){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'high',title:'Expected user activity missing',reason:`${u.name} normally records activity on ${base.activeDays} of ${base.days} comparable ${weekdays[w]} days (${aiPct(rate)}%). Other branch activity exists on this date. Verify whether this user's LIS activity is missing.`});}
+        const bd=branchDay.get(d+'::'+u.locationId);
+        const branchBase=baselineBranchStats.get(u.locationId)?.[w];
+        const branchActiveRate=branchBase&&branchBase.days?branchBase.activeDays/branchBase.days:0;
+        const branchNormallyActive=!!branchBase&&(branchBase.activeDays>=3||branchActiveRate>=0.65);
+        // If the branch itself is normally active on this comparable weekday, a missing
+        // user's activity should still be flagged even when no other user has recorded
+        // anything on the target date. If the branch is also normally inactive, leave the
+        // decision to the branch-wide anomaly so we do not falsely blame the user.
+        if(bd?.activeUsers?.size||branchNormallyActive){
+          const branchNote=bd?.activeUsers?.size
+            ? 'Other branch activity exists on this date.'
+            : `The branch is normally active on comparable ${weekdays[w]} days (${branchBase.activeDays} of ${branchBase.days}).`;
+          addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'high',title:'Expected user activity missing',reason:`${u.name} normally records activity on ${base.activeDays} of ${base.days} comparable ${weekdays[w]} days (${aiPct(rate)}%). ${branchNote} Verify whether this user's LIS activity is missing.`});
+        }
         continue;
       }
       if(!active)continue;
