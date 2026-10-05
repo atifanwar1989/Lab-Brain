@@ -150,6 +150,36 @@ function ensureFinanceConfig() {
   DB.employeeLoans = DB.employeeLoans && typeof DB.employeeLoans === 'object' ? DB.employeeLoans : {};
   DB.financeAdjustments = DB.financeAdjustments && typeof DB.financeAdjustments === 'object' ? DB.financeAdjustments : {};
 }
+function normalizeEmployeeMasterAndProfiles() {
+  const master = Array.isArray(DB.employees) ? DB.employees.map(x=>String(x||'').trim()).filter(Boolean) : [];
+  const uniqueMaster = [...new Set(master)];
+  const masterSet = new Set(uniqueMaster);
+  let changed = uniqueMaster.length !== master.length;
+  if (changed) DB.employees = uniqueMaster;
+  const profiles = Array.isArray(DB.employeeProfiles) ? DB.employeeProfiles : [];
+  const seen = new Set(), normalized = [];
+  for (const p of profiles) {
+    const employee = String(p?.employee||'').trim();
+    if (!employee) { changed = true; continue; }
+    if (!masterSet.has(employee)) {
+      if (p.active !== false) changed = true;
+      normalized.push({...p, employee, active:false});
+      continue;
+    }
+    if (p.active !== false && seen.has(employee)) {
+      changed = true;
+      normalized.push({...p, employee, active:false});
+      continue;
+    }
+    if (p.active !== false) seen.add(employee);
+    normalized.push({...p, employee});
+  }
+  if (normalized.length !== profiles.length || normalized.some((p,i)=>JSON.stringify(p)!==JSON.stringify(profiles[i]))) {
+    changed = true; DB.employeeProfiles = normalized;
+  }
+  return changed;
+}
+
 function salaryKey(month, employee) { return `${month}::${employee}`; }
 function fixedExpenseKey(month, categoryId) { return `${month}::${categoryId}`; }
 function financeAdjustmentKey(month, locationId, type) { return `${month}::${locationId}::${type}`; }
@@ -210,7 +240,14 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   ensureFinanceConfig();
   const month=String(req.query.month||'').slice(0,7);
   const locationId=String(req.query.locationId||'all');
-  const employees=(DB.employeeProfiles||[]).filter(p=>p.active!==false&&(locationId==='all'||p.locationId===locationId));
+  const masterSet=new Set(DB.employees||[]);
+  const seenEmployees=new Set();
+  const employees=(DB.employeeProfiles||[]).filter(p=>{
+    if(p.active===false || !masterSet.has(p.employee) || seenEmployees.has(p.employee)) return false;
+    if(locationId!=='all'&&p.locationId!==locationId) return false;
+    seenEmployees.add(p.employee);
+    return true;
+  });
   const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); const salaryIncluded=old?old.salaryIncluded!==false:false; return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec,salaryIncluded}}; });
   const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
   const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
@@ -228,7 +265,15 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+Number(e.amount||0);
   }
   const salaryMap={};
-  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const included=r? r.salaryIncluded!==false : false; if(!included) continue; const calc=r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0); const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc; }
+  const salaryMasterSet=new Set(DB.employees||[]), salarySeen=new Set();
+  for(const p of DB.employeeProfiles||[]) {
+    if(p.active===false || !salaryMasterSet.has(p.employee) || salarySeen.has(p.employee) || (locationId!=='all'&&p.locationId!==locationId)) continue;
+    salarySeen.add(p.employee);
+    const r=DB.salaryRecords[salaryKey(month,p.employee)], included=r? r.salaryIncluded===true : false;
+    if(!included) continue;
+    const calc=r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0);
+    const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc;
+  }
   const fixedMap={};
   for(const f of fixed) { const k=f.locationId+'::'+f.department; fixedMap[k]=(fixedMap[k]||0)+Number(f.amount||0); }
   const cashExpenseMap={};
@@ -243,7 +288,8 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   for(const loc of (DB.locations||[])) {
     if(locationId!=='all' && loc.id!==locationId) continue;
     const revenue=departments.reduce((sum,dep)=>sum+Number(revMap[loc.id+'::'+dep]||0),0);
-    const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];if(p.active===false&&!r)return sum;const included=r? r.salaryIncluded!==false : false;if(!included)return sum;return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
+    const masterSetForSalary=new Set(DB.employees||[]), seenSalaryEmployees=new Set();
+    const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id&&p.active!==false&&masterSetForSalary.has(p.employee)&&!seenSalaryEmployees.has(p.employee)&&seenSalaryEmployees.add(p.employee)).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)], included=r? r.salaryIncluded===true : false;if(!included)return sum;return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
     const utilities=(fixed||[]).filter(f=>f.locationId===loc.id).reduce((sum,f)=>sum+Number(f.amount||0),0);
     const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0};
     const vendor=Number(adj.vendorPayment||0), referral=Number(adj.referralDoctorShare||0), cash=Number(cashExpenseMap[loc.id]||0);
@@ -331,6 +377,26 @@ app.put('/api/finance-management/salary', auth, managementOnly, async (req,res)=
   const prior=DB.salaryRecords[salaryKey(month,employee)]; const salaryIncluded=body.salaryIncluded!==undefined?!!body.salaryIncluded:(prior?prior.salaryIncluded!==false:false); DB.salaryRecords[salaryKey(month,employee)]={month,employee,locationId:profile.locationId,department:profile.department,...calc,salaryIncluded,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
   try{await persist();res.json({ok:true,record:DB.salaryRecords[salaryKey(month,employee)]});}catch(e){console.error(e);res.status(500).json({error:'Could not save salary record.'});}
 });
+app.put('/api/finance-management/salary-inclusions', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const month=String(req.body.month||'').slice(0,7);
+  const selections=Array.isArray(req.body.selections)?req.body.selections:[];
+  if(!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({error:'Valid month is required.'});
+  const masterSet=new Set(DB.employees||[]), seen=new Set();
+  for(const item of selections){
+    const employee=String(item?.employee||'').trim();
+    if(!employee || seen.has(employee) || !masterSet.has(employee)) continue;
+    seen.add(employee);
+    const profile=DB.employeeProfiles.find(p=>p.employee===employee&&p.active!==false);
+    if(!profile) continue;
+    const key=salaryKey(month,employee), prior=DB.salaryRecords[key]||null;
+    const calc=prior?calculateSalary(month,profile,{absentDays:prior.absentDays,lateDays:prior.lateDays,manualDeduction:prior.manualDeduction,advanceSalary:prior.advanceSalary,loanDeduction:prior.loanDeduction}):calculateSalary(month,profile,{});
+    DB.salaryRecords[key]={...(prior||{}),month,employee,locationId:profile.locationId,department:profile.department,...calc,salaryIncluded:item.salaryIncluded===true,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  }
+  try{await persist();res.json({ok:true,salaryRecords:DB.salaryRecords});}
+  catch(e){console.error(e);res.status(500).json({error:'Could not save salary selections.'});}
+});
+
 app.put('/api/finance-management/salary-inclusion', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
   const month=String(req.body.month||'').slice(0,7), employee=String(req.body.employee||'').trim();
@@ -1390,6 +1456,7 @@ async function boot() {
     });
     DB.entries = DB.entries || {};
     DB.employees = Array.isArray(DB.employees) ? DB.employees : [];
+    if (normalizeEmployeeMasterAndProfiles()) changed = true;
     DB.vendors = Array.isArray(DB.vendors) ? DB.vendors : [];
     DB.doctors = Array.isArray(DB.doctors) ? DB.doctors : [];
     Object.keys(DB.entries).forEach(m => { DB.entries[m] = (DB.entries[m]||[]).map(e => e.locationId ? e : {...e, locationId:'nmdc-main'}); });
