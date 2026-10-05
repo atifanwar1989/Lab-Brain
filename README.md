@@ -1,3 +1,11 @@
+## V73 — Main Settings Restoration & Employee Management
+- Restored the redesigned Main Settings interface from the working settings build without changing the current Salary & Fixed Expenses implementation.
+- Main Settings long lists now remain hidden until searched/filtered, with section search boxes and account/location filters.
+- Employees section includes Add Employee popup with Full Name, Department, Designation, Date of Joining and Account Number.
+- Employee records support View, Edit, Disable/Enable and Delete; deleting an employee removes only the active master entry while preserving historical salary/financial records.
+- Staff/Reviewer/Admin Accounts use the compact searchable interface with Add Account popup.
+- Existing V72 salary checkbox/financial functionality and all existing data are preserved.
+
 ## V67 — Settings & Employee Management UI Update
 - Redesigned Settings → Employees List into a compact searchable interface with Add Employee popup, View/Edit/Delete and Disable/Enable controls.
 - Added employee master details: Full Name, Department, Designation, Date of Joining and Account Number.
