@@ -211,7 +211,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   const month=String(req.query.month||'').slice(0,7);
   const locationId=String(req.query.locationId||'all');
   const employees=(DB.employeeProfiles||[]).filter(p=>p.active!==false&&(locationId==='all'||p.locationId===locationId));
-  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec}}; });
+  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); const salaryIncluded=old?old.salaryIncluded!==false:false; return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec,salaryIncluded}}; });
   const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
   const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
   const adjustments=[];
@@ -228,7 +228,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+Number(e.amount||0);
   }
   const salaryMap={};
-  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const calc=r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0); const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc; }
+  for(const p of DB.employeeProfiles||[]) { if(p.active===false || (locationId!=='all'&&p.locationId!==locationId)) continue; const r=DB.salaryRecords[salaryKey(month,p.employee)]; const included=r? r.salaryIncluded!==false : false; if(!included) continue; const calc=r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0); const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc; }
   const fixedMap={};
   for(const f of fixed) { const k=f.locationId+'::'+f.department; fixedMap[k]=(fixedMap[k]||0)+Number(f.amount||0); }
   const cashExpenseMap={};
@@ -243,7 +243,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   for(const loc of (DB.locations||[])) {
     if(locationId!=='all' && loc.id!==locationId) continue;
     const revenue=departments.reduce((sum,dep)=>sum+Number(revMap[loc.id+'::'+dep]||0),0);
-    const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];if(p.active===false&&!r)return sum;return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
+    const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)];if(p.active===false&&!r)return sum;const included=r? r.salaryIncluded!==false : false;if(!included)return sum;return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
     const utilities=(fixed||[]).filter(f=>f.locationId===loc.id).reduce((sum,f)=>sum+Number(f.amount||0),0);
     const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0};
     const vendor=Number(adj.vendorPayment||0), referral=Number(adj.referralDoctorShare||0), cash=Number(cashExpenseMap[loc.id]||0);
@@ -328,8 +328,19 @@ app.put('/api/finance-management/salary', auth, managementOnly, async (req,res)=
   const body={...req.body};
   if(body.loanDeduction!==undefined) body.loanDeduction=Math.max(0,Number(body.loanDeduction||0));
   const calc=calculateSalary(month,profile,body);
-  DB.salaryRecords[salaryKey(month,employee)]={month,employee,locationId:profile.locationId,department:profile.department,...calc,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  const prior=DB.salaryRecords[salaryKey(month,employee)]; const salaryIncluded=body.salaryIncluded!==undefined?!!body.salaryIncluded:(prior?prior.salaryIncluded!==false:false); DB.salaryRecords[salaryKey(month,employee)]={month,employee,locationId:profile.locationId,department:profile.department,...calc,salaryIncluded,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
   try{await persist();res.json({ok:true,record:DB.salaryRecords[salaryKey(month,employee)]});}catch(e){console.error(e);res.status(500).json({error:'Could not save salary record.'});}
+});
+app.put('/api/finance-management/salary-inclusion', auth, managementOnly, async (req,res)=>{
+  ensureFinanceConfig();
+  const month=String(req.body.month||'').slice(0,7), employee=String(req.body.employee||'').trim();
+  const profile=DB.employeeProfiles.find(p=>p.employee===employee&&p.active!==false);
+  if(!/^\d{4}-\d{2}$/.test(month)||!profile)return res.status(400).json({error:'Valid month and employee profile are required.'});
+  const key=salaryKey(month,employee), prior=DB.salaryRecords[key]||null;
+  const calc=prior?calculateSalary(month,profile,{absentDays:prior.absentDays,lateDays:prior.lateDays,manualDeduction:prior.manualDeduction,advanceSalary:prior.advanceSalary,loanDeduction:prior.loanDeduction}):calculateSalary(month,profile,{});
+  const included=req.body.salaryIncluded===true;
+  DB.salaryRecords[key]={...(prior||{}),month,employee,locationId:profile.locationId,department:profile.department,...calc,salaryIncluded:included,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
+  try{await persist();res.json({ok:true,record:DB.salaryRecords[key]});}catch(e){console.error(e);res.status(500).json({error:'Could not save salary selection.'});}
 });
 app.put('/api/finance-management/employee-loan', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
