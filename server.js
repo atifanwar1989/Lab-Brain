@@ -257,12 +257,22 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   }
   const departments=['Laboratory','X-Ray','Ultrasound'];
   const revMap={};
+  const specialRevenueMap={muslimKhatri:{},roopRajput:{}};
+  const normalizedRevenueName=(v)=>String(v||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'');
   for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
     if(String(e.date||'').slice(0,7)!==month || String(e.locationId||'')==='') continue;
     if(locationId!=='all' && e.locationId!==locationId) continue;
     const c=(DB.categories||[]).find(x=>x.id===e.catId); if(!c||c.type!=='income') continue;
-    const dep=/^xray$/i.test(c.name||'')?'X-Ray':/^ultrasound$/i.test(c.name||'')?'Ultrasound':'Laboratory';
-    const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+Number(e.amount||0);
+    const name=normalizedRevenueName(c.name);
+    const amount=Number(e.amount||0);
+    if(name==='muslimkhatri') { const k=e.locationId; specialRevenueMap.muslimKhatri[k]=(specialRevenueMap.muslimKhatri[k]||0)+amount; continue; }
+    if(name==='rooprajput') { const k=e.locationId; specialRevenueMap.roopRajput[k]=(specialRevenueMap.roopRajput[k]||0)+amount; continue; }
+    let dep=null;
+    if(name==='laboratory') dep='Laboratory';
+    else if(name==='xray') dep='X-Ray';
+    else if(name==='ultrasound') dep='Ultrasound';
+    if(!dep) continue;
+    const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+amount;
   }
   const salaryMap={};
   const salaryMasterSet=new Set(DB.employees||[]), salarySeen=new Set();
@@ -287,14 +297,17 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   const financialSummary=[];
   for(const loc of (DB.locations||[])) {
     if(locationId!=='all' && loc.id!==locationId) continue;
-    const revenue=departments.reduce((sum,dep)=>sum+Number(revMap[loc.id+'::'+dep]||0),0);
+    const diagnosticRevenue=departments.reduce((sum,dep)=>sum+Number(revMap[loc.id+'::'+dep]||0),0);
+    const muslimKhatri=Number(specialRevenueMap.muslimKhatri[loc.id]||0);
+    const roopRajput=Number(specialRevenueMap.roopRajput[loc.id]||0);
+    const revenue=diagnosticRevenue+muslimKhatri+roopRajput;
     const masterSetForSalary=new Set(DB.employees||[]), seenSalaryEmployees=new Set();
     const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id&&p.active!==false&&masterSetForSalary.has(p.employee)&&!seenSalaryEmployees.has(p.employee)&&seenSalaryEmployees.add(p.employee)).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)], included=r? r.salaryIncluded===true : false;if(!included)return sum;return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
     const utilities=(fixed||[]).filter(f=>f.locationId===loc.id).reduce((sum,f)=>sum+Number(f.amount||0),0);
     const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0};
     const vendor=Number(adj.vendorPayment||0), referral=Number(adj.referralDoctorShare||0), cash=Number(cashExpenseMap[loc.id]||0);
     const net=revenue-salary-utilities-vendor-referral-cash;
-    financialSummary.push({locationId:loc.id,location:loc.name,revenue,salary,utilities,vendor,referral,cash,net});
+    financialSummary.push({locationId:loc.id,location:loc.name,revenue,diagnosticRevenue,muslimKhatri,roopRajput,salary,utilities,vendor,referral,cash,net});
   }
   const loanBalances={};
   for(const p of DB.employeeProfiles||[]){ if(DB.employeeLoans?.[p.employee]){ const l=loanForMonth(p.employee,month); const saved=DB.salaryRecords?.[salaryKey(month,p.employee)]; loanBalances[p.employee]=Math.max(0,Number(l.remaining||0)-Number(saved?.loanDeduction||0)); } }
