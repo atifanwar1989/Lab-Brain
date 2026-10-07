@@ -221,8 +221,18 @@ function advanceSalaryFor(month, employee, locationId) {
   for(const mk of Object.keys(DB.manualRefundEntries||{})) { /* intentionally no salary effect */ }
   return total;
 }
+function salaryForMonth(month, profile) {
+  const history=Array.isArray(profile?.salaryHistory)?profile.salaryHistory.slice().sort((a,b)=>String(a.effectiveFrom||'').localeCompare(String(b.effectiveFrom||''))):[];
+  if(!history.length) return Math.max(0,Number(profile?.salary||0));
+  let basic=Math.max(0,Number(history[0].previousSalary ?? profile?.salary ?? 0));
+  for(const h of history){
+    const eff=String(h.effectiveFrom||'').slice(0,7);
+    if(/^\d{4}-\d{2}$/.test(eff) && eff<=String(month).slice(0,7)) basic=Math.max(0,Number(h.salary||0));
+  }
+  return basic;
+}
 function calculateSalary(month, profile, input={}) {
-  const basic=Number(input.basicSalary ?? profile.salary ?? 0);
+  const basic=Number(input.basicSalary ?? salaryForMonth(month, profile));
   const absentDays=Math.max(0,Number(input.absentDays||0));
   const sickLeave=Math.max(0,Number(input.sickLeave||0));
   const casualLeave=Math.max(0,Number(input.casualLeave||0));
@@ -248,7 +258,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     seenEmployees.add(p.employee);
     return true;
   });
-  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); const salaryIncluded=old?old.salaryIncluded!==false:false; return { ...p, month, advanceSalary:advanceSalaryFor(month,p.employee,p.locationId), loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec,salaryIncluded}}; });
+  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); const salaryIncluded=old?old.salaryIncluded!==false:false; return { ...p, salary:rec.basicSalary, month, advanceSalary:rec.advanceSalary, loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec,salaryIncluded}}; });
   const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
   const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
   const adjustments=[];
@@ -370,7 +380,31 @@ app.delete('/api/config/employee/:name', auth, adminOnly, async (req,res)=>{
 app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>{
   ensureFinanceConfig();
   const incoming=Array.isArray(req.body.employeeProfiles)?req.body.employeeProfiles:[];
-  DB.employeeProfiles=incoming.map(p=>({employee:String(p.employee||'').trim(),locationId:String(p.locationId||''),department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(p.department)?p.department:'ALL',designation:String(p.designation||'').trim(),dateOfJoining:String(p.dateOfJoining||'').slice(0,10),accountNumber:String(p.accountNumber||'').trim(),salary:Math.max(0,Number(p.salary||0)),sickLeaveEntitlement:Math.max(0,Number(p.sickLeaveEntitlement||0)),casualLeaveEntitlement:Math.max(0,Number(p.casualLeaveEntitlement||0)),annualLeaveEntitlement:Math.max(0,Number(p.annualLeaveEntitlement||0)),active:p.active!==false})).filter(p=>p.employee&&p.locationId);
+  const existingByName=new Map((DB.employeeProfiles||[]).map(p=>[p.employee,p]));
+  const seen=new Set();
+  const normalized=[];
+  for(const raw of incoming){
+    const employee=String(raw.employee||'').trim(), locationId=String(raw.locationId||'');
+    if(!employee||!locationId||seen.has(employee)) continue;
+    seen.add(employee);
+    const old=existingByName.get(employee)||{};
+    const salary=Math.max(0,Number(raw.salary||0));
+    const oldSalary=Math.max(0,Number(old.salary||0));
+    const requestedEffective=String(raw.salaryEffectiveFrom||'').slice(0,7);
+    let history=Array.isArray(old.salaryHistory)?old.salaryHistory.map(h=>({...h})):[];
+    if(salary!==oldSalary){
+      if(!/^\d{4}-\d{2}$/.test(requestedEffective)) return res.status(400).json({error:`Select the effective month for the salary revision of ${employee}.`});
+      const idx=history.findIndex(h=>String(h.effectiveFrom||'').slice(0,7)===requestedEffective);
+      const previousAtEffective=salaryForMonth(requestedEffective, old);
+      const revision={effectiveFrom:requestedEffective,salary,previousSalary:previousAtEffective,changedAt:Date.now(),changedByUsername:req.user.username,changedByName:req.user.name};
+      if(idx>=0) history[idx]=revision; else history.push(revision);
+      history.sort((a,b)=>String(a.effectiveFrom||'').localeCompare(String(b.effectiveFrom||'')));
+    }
+    normalized.push({employee,locationId,department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(raw.department)?raw.department:(old.department||'ALL'),designation:String(raw.designation??old.designation??'').trim(),dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??'').slice(0,10),accountNumber:String(raw.accountNumber??old.accountNumber??'').trim(),salary,salaryHistory:history,sickLeaveEntitlement:Math.max(0,Number(raw.sickLeaveEntitlement??old.sickLeaveEntitlement??0)),casualLeaveEntitlement:Math.max(0,Number(raw.casualLeaveEntitlement??old.casualLeaveEntitlement??0)),annualLeaveEntitlement:Math.max(0,Number(raw.annualLeaveEntitlement??old.annualLeaveEntitlement??0)),active:raw.active!==false});
+  }
+  // Preserve profiles not included by a filtered UI view.
+  for(const old of DB.employeeProfiles||[]){ if(!seen.has(old.employee)) normalized.push(old); }
+  DB.employeeProfiles=normalized;
   try{await persist();res.json({ok:true,employeeProfiles:DB.employeeProfiles});}catch(e){console.error(e);res.status(500).json({error:'Could not save employee profiles.'});}
 });
 app.put('/api/config/fixed-expense-categories', auth, managementOnly, async (req,res)=>{
