@@ -2,6 +2,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
+const archiver = require('archiver');
+const unzipper = require('unzipper');
 const { load, save, defaultData, getSecret, listBackups, getBackup, pool } = require('./store');
 
 const PORT = process.env.PORT || 4000;
@@ -1559,6 +1561,84 @@ app.put('/api/ultrasound/settings', auth, ultrasoundAccess, async (req,res) => {
   await pool.query(`INSERT INTO ultrasound_settings(key,value,updated_at) VALUES('assignments',$1::jsonb,now()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [JSON.stringify({sonographerUsername,sonologistUsername})]);
   res.json({ok:true});
 });
+// Month-wise archive tools. Only a full Admin account can export/import/delete archived data.
+function ultrasoundMonthRange(month) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ''))) return null;
+  const [y,m] = month.split('-').map(Number);
+  const next = m === 12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
+  return { start: `${month}-01`, end: `${next}-01` };
+}
+function ultrasoundArchiveAllowed(req,res) {
+  if (req.user.role !== 'admin' || req.ultrasoundRole !== 'admin') { res.status(403).json({error:'Only the main Lab-Brain Admin can manage monthly archives.'}); return false; }
+  return true;
+}
+app.get('/api/ultrasound/archive/summary', auth, ultrasoundAccess, async (req,res) => {
+  if (!ultrasoundArchiveAllowed(req,res)) return;
+  await ensureUltrasoundTables();
+  const r = await pool.query(`SELECT to_char(created_at AT TIME ZONE 'Asia/Karachi','YYYY-MM') AS month, COUNT(*)::int AS cases, COALESCE(SUM(octet_length(report_data)+octet_length(image_data)),0)::bigint AS bytes FROM ultrasound_cases GROUP BY 1 ORDER BY 1 DESC`);
+  res.json({months:r.rows.map(x=>({month:x.month,cases:x.cases,bytes:Number(x.bytes)}))});
+});
+app.get('/api/ultrasound/archive/export', auth, ultrasoundAccess, async (req,res) => {
+  if (!ultrasoundArchiveAllowed(req,res)) return;
+  const month=String(req.query.month||''), range=ultrasoundMonthRange(month);
+  if(!range) return res.status(400).json({error:'Select a valid month in YYYY-MM format.'});
+  await ensureUltrasoundTables();
+  const q=await pool.query(`SELECT * FROM ultrasound_cases WHERE (created_at AT TIME ZONE 'Asia/Karachi') >= $1::date AND (created_at AT TIME ZONE 'Asia/Karachi') < $2::date ORDER BY created_at`,[range.start,range.end]);
+  const archive=archiver('zip',{zlib:{level:6}});
+  res.setHeader('Content-Type','application/zip');
+  res.setHeader('Content-Disposition',`attachment; filename="lab-brain-ultrasound-${month}.zip"`);
+  archive.on('error',err=>{console.error('Ultrasound archive export failed:',err);if(!res.headersSent)res.status(500);res.end();});
+  archive.pipe(res);
+  const cases=q.rows.map((r,i)=>{
+    const folder=`cases/${String(i+1).padStart(5,'0')}`;
+    const reportPath=`${folder}/report${path.extname(r.report_name||'')||'.bin'}`;
+    const imagePath=`${folder}/image${path.extname(r.image_name||'')||'.bin'}`;
+    archive.append(Buffer.from(r.report_data),{name:reportPath});
+    archive.append(Buffer.from(r.image_data),{name:imagePath});
+    return {id:r.id,patient_name:r.patient_name,lab_number:r.lab_number,sonographer_username:r.sonographer_username,sonographer_name:r.sonographer_name,sonologist_username:r.sonologist_username,status:r.status,report_name:r.report_name,report_type:r.report_type,report_path:reportPath,image_name:r.image_name,image_type:r.image_type,image_path:imagePath,sonographer_note:r.sonographer_note,review_comments:r.review_comments,created_at:r.created_at,updated_at:r.updated_at,reviewed_at:r.reviewed_at,signed_by:r.signed_by,signed_by_name:r.signed_by_name};
+  });
+  archive.append(JSON.stringify({format:'lab-brain-ultrasound-archive',version:1,month,exportedAt:new Date().toISOString(),caseCount:cases.length,cases},null,2),{name:'manifest.json'});
+  archive.finalize();
+});
+app.post('/api/ultrasound/archive/import', express.raw({type:'application/zip',limit:'250mb'}), auth, ultrasoundAccess, async (req,res) => {
+  if (!ultrasoundArchiveAllowed(req,res)) return;
+  const archiveBuffer=Buffer.isBuffer(req.body)?req.body:null;
+  if(!archiveBuffer || !archiveBuffer.length) return res.status(400).json({error:'Choose a valid Ultrasound archive ZIP file.'});
+  try {
+    await ensureUltrasoundTables();
+    const zip=await unzipper.Open.buffer(archiveBuffer);
+    const byName=new Map(zip.files.filter(f=>f.type==='File').map(f=>[f.path,f]));
+    const mf=byName.get('manifest.json'); if(!mf) return res.status(400).json({error:'Archive is missing manifest.json.'});
+    const manifest=JSON.parse((await mf.buffer()).toString('utf8'));
+    if(manifest.format!=='lab-brain-ultrasound-archive'||manifest.version!==1||!Array.isArray(manifest.cases)||!ultrasoundMonthRange(manifest.month)) return res.status(400).json({error:'This is not a supported Lab-Brain Ultrasound archive.'});
+    if(manifest.cases.length>10000) return res.status(400).json({error:'Archive contains too many cases.'});
+    const client=await pool.connect(); let imported=0,skipped=0;
+    try {
+      await client.query('BEGIN');
+      for(const c of manifest.cases){
+        if(!c.id||!c.patient_name||!c.lab_number||!c.report_path||!c.image_path||c.report_path.includes('..')||c.image_path.includes('..')) throw new Error('Archive manifest contains invalid case data.');
+        const rf=byName.get(c.report_path), imf=byName.get(c.image_path); if(!rf||!imf) throw new Error(`Archive files are missing for case ${c.lab_number}.`);
+        const exists=await client.query('SELECT 1 FROM ultrasound_cases WHERE id=$1',[String(c.id)]);
+        if(exists.rowCount){skipped++;continue;}
+        await client.query(`INSERT INTO ultrasound_cases(id,patient_name,lab_number,sonographer_username,sonographer_name,sonologist_username,status,report_name,report_type,report_data,image_name,image_type,image_data,sonographer_note,review_comments,created_at,updated_at,reviewed_at,signed_by,signed_by_name)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,[String(c.id),String(c.patient_name),String(c.lab_number),String(c.sonographer_username||'archived'),String(c.sonographer_name||'Archived user'),c.sonologist_username||null,['pending_review','changes_requested','reviewed'].includes(c.status)?c.status:'pending_review',String(c.report_name||'report.pdf'),String(c.report_type||'application/pdf'),await rf.buffer(),String(c.image_name||'image.bin'),String(c.image_type||'application/octet-stream'),await imf.buffer(),String(c.sonographer_note||''),String(c.review_comments||''),c.created_at||new Date().toISOString(),c.updated_at||c.created_at||new Date().toISOString(),c.reviewed_at||null,c.signed_by||null,c.signed_by_name||null]);
+        imported++;
+      }
+      await client.query('COMMIT');
+    } catch(e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+    res.json({ok:true,month:manifest.month,imported,skipped,message:`Imported ${imported} case(s); skipped ${skipped} existing case(s).`});
+  } catch(e) { console.error('Ultrasound archive import failed:',e); res.status(400).json({error:e.message||'Could not import this archive.'}); }
+});
+app.post('/api/ultrasound/archive/delete', auth, ultrasoundAccess, async (req,res) => {
+  if (!ultrasoundArchiveAllowed(req,res)) return;
+  const month=String(req.body?.month||''), range=ultrasoundMonthRange(month);
+  if(!range) return res.status(400).json({error:'Select a valid month in YYYY-MM format.'});
+  if(req.body?.confirmMonth!==month || req.body?.backupConfirmed!==true) return res.status(400).json({error:'Confirm the exact month and verify that the ZIP backup is safely saved before deleting.'});
+  await ensureUltrasoundTables();
+  const r=await pool.query(`DELETE FROM ultrasound_cases WHERE (created_at AT TIME ZONE 'Asia/Karachi') >= $1::date AND (created_at AT TIME ZONE 'Asia/Karachi') < $2::date RETURNING id`,[range.start,range.end]);
+  res.json({ok:true,month,deleted:r.rowCount,message:`Deleted ${r.rowCount} Ultrasound case(s) from ${month}.`});
+});
+
 app.get('/api/ultrasound/cases', auth, ultrasoundAccess, async (req,res) => {
   await ensureUltrasoundTables();
   let q, args=[];
