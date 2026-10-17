@@ -36,7 +36,7 @@ function auth(req, res, next) {
     const user = DB && DB.users.find(u => u.id === claims.id || u.username === claims.username);
     if (!user) return res.status(401).json({ error: 'Account no longer exists' });
     if (user.active === false) return res.status(401).json({ error: 'This account is disabled. Please contact the administrator.' });
-    req.user = { id: user.id, username: user.username, role: user.role, name: user.name, locationId: user.locationId || null };
+    req.user = { id: user.id, username: user.username, role: user.role, ultrasoundRole: user.ultrasoundRole || null, name: user.name, locationId: user.locationId || null };
     next();
   } catch (e) {
     return res.status(401).json({ error: 'Session expired, please log in again' });
@@ -57,6 +57,23 @@ function ready(req, res, next) {
   next();
 }
 app.use(ready);
+// Ultrasound-only accounts may use only identity and Ultrasound APIs. This is a
+// server-side restriction, not merely hidden navigation in the browser.
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/') || req.path === '/api/login') return next();
+  const h = req.headers.authorization || '';
+  const token = h.startsWith('Bearer ') ? h.slice(7) : '';
+  if (!token || !SECRET || !DB) return next();
+  try {
+    const claims = jwt.verify(token, SECRET);
+    const u = (DB.users || []).find(x => x.id === claims.id || x.username === claims.username);
+    if (u && u.active !== false && u.role === 'ultrasound') {
+      if (req.path === '/api/me' || req.path === '/api/change-password' || req.path.startsWith('/api/ultrasound/')) return next();
+      return res.status(403).json({ error: 'This account is restricted to the Ultrasound department.' });
+    }
+  } catch (_) {}
+  next();
+});
 
 // ---------------- Auth ----------------
 app.post('/api/login', (req, res) => {
@@ -1465,9 +1482,19 @@ async function ultrasoundAccess(req, res, next) {
   try {
     const a = await ultrasoundSettings();
     const u = req.user.username;
-    if (req.user.role === 'admin' || u === a.sonographerUsername || u === a.sonologistUsername) {
+    if (req.user.role === 'admin') {
       req.ultrasoundAssignments = a;
-      req.ultrasoundRole = req.user.role === 'admin' ? 'admin' : (u === a.sonologistUsername ? 'sonologist' : 'sonographer');
+      req.ultrasoundRole = 'admin';
+      return next();
+    }
+    if (req.user.role === 'ultrasound' && ['sonographer','sonologist'].includes(req.user.ultrasoundRole)) {
+      req.ultrasoundAssignments = { ...a, sonologistUsername: (DB.users || []).find(x => x.role === 'ultrasound' && x.ultrasoundRole === 'sonologist' && x.active !== false)?.username || a.sonologistUsername || '' };
+      req.ultrasoundRole = req.user.ultrasoundRole;
+      return next();
+    }
+    if (u === a.sonographerUsername || u === a.sonologistUsername) {
+      req.ultrasoundAssignments = a;
+      req.ultrasoundRole = u === a.sonologistUsername ? 'sonologist' : 'sonographer';
       return next();
     }
     return res.status(403).json({ error: 'Ultrasound access has not been assigned to your account.' });
@@ -1481,21 +1508,53 @@ function ultrasoundFileOk(file, allowed) {
 }
 function ultrasoundCaseRow(r) { return { id:r.id, patientName:r.patient_name, labNumber:r.lab_number, sonographerUsername:r.sonographer_username, sonographerName:r.sonographer_name, sonologistUsername:r.sonologist_username, status:r.status, reportName:r.report_name, imageName:r.image_name, sonographerNote:r.sonographer_note, reviewComments:r.review_comments, createdAt:r.created_at, updatedAt:r.updated_at, reviewedAt:r.reviewed_at, signedBy:r.signed_by_name }; }
 app.get('/api/ultrasound/access', auth, async (req,res) => {
-  try { const a=await ultrasoundSettings(); const u=req.user.username; res.json({assigned: req.user.role==='admin'||u===a.sonographerUsername||u===a.sonologistUsername, admin:req.user.role==='admin', role:u===a.sonologistUsername?'sonologist':u===a.sonographerUsername?'sonographer':(req.user.role==='admin'?'admin':null)}); }
-  catch(e) { console.error(e); res.status(500).json({error:'Could not load Ultrasound access.'}); }
+  try {
+    const a = await ultrasoundSettings();
+    const u = req.user.username;
+    const dedicatedRole = req.user.role === 'ultrasound' ? req.user.ultrasoundRole : null;
+    const legacyRole = u === a.sonologistUsername ? 'sonologist' : u === a.sonographerUsername ? 'sonographer' : null;
+    const role = req.user.role === 'admin' ? 'admin' : dedicatedRole || legacyRole;
+    res.json({ assigned: !!role, admin: req.user.role === 'admin', role });
+  } catch(e) { console.error(e); res.status(500).json({error:'Could not load Ultrasound access.'}); }
 });
 app.get('/api/ultrasound/settings', auth, ultrasoundAccess, async (req,res) => {
-  if (req.ultrasoundRole !== 'admin') return res.status(403).json({error:'Only Admin can manage Ultrasound assignments.'});
+  if (req.ultrasoundRole !== 'admin') return res.status(403).json({error:'Only Admin can manage Ultrasound accounts.'});
   const a = await ultrasoundSettings();
-  res.json({ assignments:a, users:(DB.users||[]).filter(u=>u.active!==false).map(u=>({username:u.username,name:u.name,role:u.role})) });
+  const accounts = (DB.users || []).filter(u => u.role === 'ultrasound').map(u => ({id:u.id,name:u.name,username:u.username,ultrasoundRole:u.ultrasoundRole,active:u.active!==false}));
+  res.json({ assignments:a, accounts });
+});
+app.post('/api/ultrasound/users', auth, adminOnly, async (req,res) => {
+  const name = String(req.body?.name || '').trim();
+  const username = String(req.body?.username || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  const ultrasoundRole = String(req.body?.ultrasoundRole || '');
+  if (!name || !username || !password) return res.status(400).json({error:'Name, username and password are required.'});
+  if (!/^[a-z0-9._-]{3,40}$/.test(username)) return res.status(400).json({error:'Username must be 3–40 characters using letters, numbers, dots, underscores or hyphens.'});
+  if (password.length < 6) return res.status(400).json({error:'Password must be at least 6 characters.'});
+  if (!['sonographer','sonologist'].includes(ultrasoundRole)) return res.status(400).json({error:'Choose Sonographer or Sonologist.'});
+  if ((DB.users || []).some(u => String(u.username || '').toLowerCase() === username)) return res.status(400).json({error:'That username already exists.'});
+  if (ultrasoundRole === 'sonologist' && (DB.users || []).some(u => u.role === 'ultrasound' && u.ultrasoundRole === 'sonologist' && u.active !== false)) return res.status(400).json({error:'An active Sonologist account already exists. Disable it before creating another.'});
+  DB.users.push({id:'us_'+username,name,username,passwordHash:bcrypt.hashSync(password,10),role:'ultrasound',ultrasoundRole,locationId:null,active:true,statusHistory:[{active:true,effectiveDate:todayPakistan()}]});
+  try { await persist(); res.json({ok:true}); }
+  catch(e) { console.error('Ultrasound account creation failed:',e); res.status(500).json({error:'Could not save the Ultrasound account.'}); }
+});
+app.put('/api/ultrasound/users/:id', auth, adminOnly, async (req,res) => {
+  const u = (DB.users || []).find(x => x.id === req.params.id && x.role === 'ultrasound');
+  if (!u) return res.status(404).json({error:'Ultrasound account not found.'});
+  if (typeof req.body?.active !== 'boolean') return res.status(400).json({error:'Choose Enable or Disable.'});
+  u.active = req.body.active;
+  u.statusHistory = Array.isArray(u.statusHistory) ? u.statusHistory : [];
+  u.statusHistory.push({active:u.active,effectiveDate:todayPakistan()});
+  try { await persist(); res.json({ok:true}); }
+  catch(e) { console.error(e); res.status(500).json({error:'Could not update the Ultrasound account.'}); }
 });
 app.put('/api/ultrasound/settings', auth, ultrasoundAccess, async (req,res) => {
-  if (req.ultrasoundRole !== 'admin') return res.status(403).json({error:'Only Admin can manage Ultrasound assignments.'});
+  if (req.ultrasoundRole !== 'admin') return res.status(403).json({error:'Only Admin can manage Ultrasound settings.'});
   const sonographerUsername=String(req.body?.sonographerUsername||'').trim();
   const sonologistUsername=String(req.body?.sonologistUsername||'').trim();
   if (!sonographerUsername || !sonologistUsername) return res.status(400).json({error:'Assign both a Sonographer and a Sonologist.'});
   if (sonographerUsername===sonologistUsername) return res.status(400).json({error:'Sonographer and Sonologist must be different users.'});
-  for (const username of [sonographerUsername,sonologistUsername]) if (!(DB.users||[]).some(u=>u.username===username&&u.active!==false)) return res.status(400).json({error:'Please choose active user accounts only.'});
+  for (const username of [sonographerUsername,sonologistUsername]) if (!(DB.users||[]).some(u => u.username===username && u.active!==false)) return res.status(400).json({error:'Please choose active user accounts only.'});
   await ensureUltrasoundTables();
   await pool.query(`INSERT INTO ultrasound_settings(key,value,updated_at) VALUES('assignments',$1::jsonb,now()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [JSON.stringify({sonographerUsername,sonologistUsername})]);
   res.json({ok:true});
@@ -1517,11 +1576,13 @@ app.post('/api/ultrasound/cases', auth, ultrasoundAccess, async (req,res) => {
   if (!patientName || !labNumber) return res.status(400).json({error:'Patient name and lab number are required.'});
   if (!ultrasoundFileOk(report,reportTypes)) return res.status(400).json({error:'Upload a valid report PDF or image file (max 15 MB).'});
   if (!ultrasoundFileOk(image,imageTypes)) return res.status(400).json({error:'Upload a valid ultrasound image (JPG, PNG or WEBP; max 15 MB).'});
+  const sonologistUsername = req.ultrasoundAssignments.sonologistUsername || (DB.users||[]).find(u=>u.role==='ultrasound'&&u.ultrasoundRole==='sonologist'&&u.active!==false)?.username || '';
+  if (!sonologistUsername) return res.status(400).json({error:'No active Sonologist account exists. Ask Admin to create one first.'});
   const decode=f=>Buffer.from(f.data.replace(/^data:[^,]*;base64,/,''),'base64');
   const id='us_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9);
   await ensureUltrasoundTables();
   await pool.query(`INSERT INTO ultrasound_cases(id,patient_name,lab_number,sonographer_username,sonographer_name,sonologist_username,status,report_name,report_type,report_data,image_name,image_type,image_data,sonographer_note)
-    VALUES($1,$2,$3,$4,$5,$6,'pending_review',$7,$8,$9,$10,$11,$12,$13)`,[id,patientName,labNumber,req.user.username,req.user.name,req.ultrasoundAssignments.sonologistUsername,String(report.name).slice(0,250),String(report.type).toLowerCase(),decode(report),String(image.name).slice(0,250),String(image.type).toLowerCase(),decode(image),note]);
+    VALUES($1,$2,$3,$4,$5,$6,'pending_review',$7,$8,$9,$10,$11,$12,$13)`,[id,patientName,labNumber,req.user.username,req.user.name,sonologistUsername,String(report.name).slice(0,250),String(report.type).toLowerCase(),decode(report),String(image.name).slice(0,250),String(image.type).toLowerCase(),decode(image),note]);
   res.json({ok:true,id});
 });
 app.get('/api/ultrasound/cases/:id', auth, ultrasoundAccess, async (req,res) => {
