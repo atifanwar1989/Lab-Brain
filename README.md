@@ -191,3 +191,8 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 - Inactive status is tracked with effective-date history so AI Activity Check does not flag former staff after they leave.
 - Expanded AI Activity Check with patient-count completeness/anomaly checks, Laboratory/X-ray/Ultrasound completeness and amount anomaly checks, and branch-wide unusually low/no-revenue detection.
 - AI remains analysis-only and never edits transactional records.
+
+
+## Ultrasound workflow module
+
+The Ultrasound module uses separate PostgreSQL tables (`ultrasound_settings` and `ultrasound_cases`) so existing `app_state` financial/configuration records are not rewritten when ultrasound cases are created or reviewed. In Settings, an Admin assigns existing active accounts as Sonographer and Sonologist. The Sonographer submits patient name, lab number, a report file, and an ultrasound image. The Sonologist account is restricted to the Ultrasound screen, where it can review the files, request changes with comments, or sign off the case. The Sonographer can track status, resubmit revised files when changes are requested, and print a reviewed case. Report/image files are stored in PostgreSQL; uploads are limited to 15 MB per file.

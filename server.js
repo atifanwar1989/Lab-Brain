@@ -12,7 +12,7 @@ let SECRET = null;
 async function persist(data = DB) { await save(data); }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '48mb' }));
 // Prevent stale deployed frontend code from being served from browser/proxy cache.
 app.use((req,res,next)=>{ if(req.path==='/' || req.path.endsWith('.html')) res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate'); next(); });
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0 }));
@@ -1436,6 +1436,122 @@ app.get('/api/handover-history', auth, (req, res) => {
   const month = req.query.month;
   const rows = Object.entries(DB.handovers).filter(([k])=>k.startsWith(month)).map(([k,v])=>{const [date,username]=k.split('::'); return {date,username,...v};}).filter(r=>isManagementRole(req.user.role)||r.username===req.user.username).sort((a,b)=>a.date.localeCompare(b.date));
   res.json({ rows });
+});
+
+// ---------------- Ultrasound workflow (isolated tables; does not rewrite app_state) ----------------
+let ultrasoundTablesReady = null;
+async function ensureUltrasoundTables() {
+  if (!ultrasoundTablesReady) ultrasoundTablesReady = (async () => {
+    await pool.query(`CREATE TABLE IF NOT EXISTS ultrasound_settings (key TEXT PRIMARY KEY, value JSONB NOT NULL, updated_at TIMESTAMPTZ DEFAULT now())`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS ultrasound_cases (
+      id TEXT PRIMARY KEY, patient_name TEXT NOT NULL, lab_number TEXT NOT NULL,
+      sonographer_username TEXT NOT NULL, sonographer_name TEXT NOT NULL,
+      sonologist_username TEXT, status TEXT NOT NULL DEFAULT 'pending_review',
+      report_name TEXT NOT NULL, report_type TEXT NOT NULL, report_data BYTEA NOT NULL,
+      image_name TEXT NOT NULL, image_type TEXT NOT NULL, image_data BYTEA NOT NULL,
+      sonographer_note TEXT NOT NULL DEFAULT '', review_comments TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      reviewed_at TIMESTAMPTZ, signed_by TEXT, signed_by_name TEXT
+    )`);
+  })().catch(e => { ultrasoundTablesReady = null; throw e; });
+  await ultrasoundTablesReady;
+}
+async function ultrasoundSettings() {
+  await ensureUltrasoundTables();
+  const r = await pool.query('SELECT value FROM ultrasound_settings WHERE key=$1', ['assignments']);
+  return r.rows[0]?.value || { sonographerUsername: '', sonologistUsername: '' };
+}
+async function ultrasoundAccess(req, res, next) {
+  try {
+    const a = await ultrasoundSettings();
+    const u = req.user.username;
+    if (req.user.role === 'admin' || u === a.sonographerUsername || u === a.sonologistUsername) {
+      req.ultrasoundAssignments = a;
+      req.ultrasoundRole = req.user.role === 'admin' ? 'admin' : (u === a.sonologistUsername ? 'sonologist' : 'sonographer');
+      return next();
+    }
+    return res.status(403).json({ error: 'Ultrasound access has not been assigned to your account.' });
+  } catch (e) { console.error('Ultrasound access check failed:', e); return res.status(500).json({ error: 'Could not verify Ultrasound access.' }); }
+}
+function ultrasoundFileOk(file, allowed) {
+  if (!file || typeof file.data !== 'string' || !file.name || !file.type) return false;
+  if (!allowed.includes(String(file.type).toLowerCase())) return false;
+  const raw = file.data.replace(/^data:[^,]*;base64,/, '');
+  return /^[A-Za-z0-9+/]*={0,2}$/.test(raw) && raw.length > 0 && raw.length <= 20 * 1024 * 1024;
+}
+function ultrasoundCaseRow(r) { return { id:r.id, patientName:r.patient_name, labNumber:r.lab_number, sonographerUsername:r.sonographer_username, sonographerName:r.sonographer_name, sonologistUsername:r.sonologist_username, status:r.status, reportName:r.report_name, imageName:r.image_name, sonographerNote:r.sonographer_note, reviewComments:r.review_comments, createdAt:r.created_at, updatedAt:r.updated_at, reviewedAt:r.reviewed_at, signedBy:r.signed_by_name }; }
+app.get('/api/ultrasound/access', auth, async (req,res) => {
+  try { const a=await ultrasoundSettings(); const u=req.user.username; res.json({assigned: req.user.role==='admin'||u===a.sonographerUsername||u===a.sonologistUsername, admin:req.user.role==='admin', role:u===a.sonologistUsername?'sonologist':u===a.sonographerUsername?'sonographer':(req.user.role==='admin'?'admin':null)}); }
+  catch(e) { console.error(e); res.status(500).json({error:'Could not load Ultrasound access.'}); }
+});
+app.get('/api/ultrasound/settings', auth, ultrasoundAccess, async (req,res) => {
+  if (req.ultrasoundRole !== 'admin') return res.status(403).json({error:'Only Admin can manage Ultrasound assignments.'});
+  const a = await ultrasoundSettings();
+  res.json({ assignments:a, users:(DB.users||[]).filter(u=>u.active!==false).map(u=>({username:u.username,name:u.name,role:u.role})) });
+});
+app.put('/api/ultrasound/settings', auth, ultrasoundAccess, async (req,res) => {
+  if (req.ultrasoundRole !== 'admin') return res.status(403).json({error:'Only Admin can manage Ultrasound assignments.'});
+  const sonographerUsername=String(req.body?.sonographerUsername||'').trim();
+  const sonologistUsername=String(req.body?.sonologistUsername||'').trim();
+  if (!sonographerUsername || !sonologistUsername) return res.status(400).json({error:'Assign both a Sonographer and a Sonologist.'});
+  if (sonographerUsername===sonologistUsername) return res.status(400).json({error:'Sonographer and Sonologist must be different users.'});
+  for (const username of [sonographerUsername,sonologistUsername]) if (!(DB.users||[]).some(u=>u.username===username&&u.active!==false)) return res.status(400).json({error:'Please choose active user accounts only.'});
+  await ensureUltrasoundTables();
+  await pool.query(`INSERT INTO ultrasound_settings(key,value,updated_at) VALUES('assignments',$1::jsonb,now()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [JSON.stringify({sonographerUsername,sonologistUsername})]);
+  res.json({ok:true});
+});
+app.get('/api/ultrasound/cases', auth, ultrasoundAccess, async (req,res) => {
+  await ensureUltrasoundTables();
+  let q, args=[];
+  if (req.ultrasoundRole==='sonologist') q=await pool.query(`SELECT * FROM ultrasound_cases WHERE status IN ('pending_review','changes_requested') ORDER BY created_at ASC`);
+  else if (req.ultrasoundRole==='sonographer') { args=[req.user.username]; q=await pool.query(`SELECT * FROM ultrasound_cases WHERE sonographer_username=$1 ORDER BY created_at DESC`,args); }
+  else q=await pool.query(`SELECT * FROM ultrasound_cases ORDER BY created_at DESC`);
+  res.json({role:req.ultrasoundRole,cases:q.rows.map(ultrasoundCaseRow)});
+});
+app.post('/api/ultrasound/cases', auth, ultrasoundAccess, async (req,res) => {
+  if (req.ultrasoundRole!=='sonographer') return res.status(403).json({error:'Only the assigned Sonographer can submit cases.'});
+  const patientName=String(req.body?.patientName||'').trim(), labNumber=String(req.body?.labNumber||'').trim();
+  const report=req.body?.report, image=req.body?.image, note=String(req.body?.note||'').trim();
+  const reportTypes=['application/pdf','image/jpeg','image/png','image/webp'];
+  const imageTypes=['image/jpeg','image/png','image/webp'];
+  if (!patientName || !labNumber) return res.status(400).json({error:'Patient name and lab number are required.'});
+  if (!ultrasoundFileOk(report,reportTypes)) return res.status(400).json({error:'Upload a valid report PDF or image file (max 15 MB).'});
+  if (!ultrasoundFileOk(image,imageTypes)) return res.status(400).json({error:'Upload a valid ultrasound image (JPG, PNG or WEBP; max 15 MB).'});
+  const decode=f=>Buffer.from(f.data.replace(/^data:[^,]*;base64,/,''),'base64');
+  const id='us_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9);
+  await ensureUltrasoundTables();
+  await pool.query(`INSERT INTO ultrasound_cases(id,patient_name,lab_number,sonographer_username,sonographer_name,sonologist_username,status,report_name,report_type,report_data,image_name,image_type,image_data,sonographer_note)
+    VALUES($1,$2,$3,$4,$5,$6,'pending_review',$7,$8,$9,$10,$11,$12,$13)`,[id,patientName,labNumber,req.user.username,req.user.name,req.ultrasoundAssignments.sonologistUsername,String(report.name).slice(0,250),String(report.type).toLowerCase(),decode(report),String(image.name).slice(0,250),String(image.type).toLowerCase(),decode(image),note]);
+  res.json({ok:true,id});
+});
+app.get('/api/ultrasound/cases/:id', auth, ultrasoundAccess, async (req,res) => {
+  await ensureUltrasoundTables();
+  const r=await pool.query('SELECT * FROM ultrasound_cases WHERE id=$1',[req.params.id]);
+  if(!r.rows[0]) return res.status(404).json({error:'Ultrasound case not found.'});
+  const c=r.rows[0];
+  if(req.ultrasoundRole==='sonographer'&&c.sonographer_username!==req.user.username) return res.status(403).json({error:'This case is not assigned to your account.'});
+  if(req.ultrasoundRole==='sonologist'&&c.sonologist_username!==req.user.username) return res.status(403).json({error:'This case is not assigned to your account.'});
+  res.json({case:ultrasoundCaseRow(c),report:{name:c.report_name,type:c.report_type,data:'data:'+c.report_type+';base64,'+Buffer.from(c.report_data).toString('base64')},image:{name:c.image_name,type:c.image_type,data:'data:'+c.image_type+';base64,'+Buffer.from(c.image_data).toString('base64')}});
+});
+app.post('/api/ultrasound/cases/:id/review', auth, ultrasoundAccess, async (req,res) => {
+  if(req.ultrasoundRole!=='sonologist') return res.status(403).json({error:'Only the assigned Sonologist can review and sign off cases.'});
+  const action=String(req.body?.action||''), comments=String(req.body?.comments||'').trim();
+  if(!['approve','changes'].includes(action)) return res.status(400).json({error:'Choose approve or request changes.'});
+  if(action==='changes'&&!comments) return res.status(400).json({error:'Enter comments describing the required changes.'});
+  await ensureUltrasoundTables();
+  const status=action==='approve'?'reviewed':'changes_requested';
+  const r=await pool.query(`UPDATE ultrasound_cases SET status=$1,review_comments=$2,updated_at=now(),reviewed_at=CASE WHEN $1='reviewed' THEN now() ELSE NULL END,signed_by=CASE WHEN $1='reviewed' THEN $3 ELSE NULL END,signed_by_name=CASE WHEN $1='reviewed' THEN $4 ELSE NULL END WHERE id=$5 AND sonologist_username=$3 AND status IN ('pending_review','changes_requested') RETURNING id`,[status,comments,req.user.username,req.user.name,req.params.id]);
+  if(!r.rowCount) return res.status(404).json({error:'Pending review case not found.'});
+  res.json({ok:true,status});
+});
+app.post('/api/ultrasound/cases/:id/resubmit', auth, ultrasoundAccess, async (req,res) => {
+  if(req.ultrasoundRole!=='sonographer') return res.status(403).json({error:'Only the assigned Sonographer can resubmit cases.'});
+  const report=req.body?.report, image=req.body?.image;
+  const reportTypes=['application/pdf','image/jpeg','image/png','image/webp'], imageTypes=['image/jpeg','image/png','image/webp'];
+  if(!ultrasoundFileOk(report,reportTypes)||!ultrasoundFileOk(image,imageTypes)) return res.status(400).json({error:'Please upload a valid report and ultrasound image, each no larger than 15 MB.'});
+  const decode=f=>Buffer.from(f.data.replace(/^data:[^,]*;base64,/,''),'base64'); await ensureUltrasoundTables();
+  const r=await pool.query(`UPDATE ultrasound_cases SET report_name=$1,report_type=$2,report_data=$3,image_name=$4,image_type=$5,image_data=$6,status='pending_review',review_comments='',updated_at=now(),reviewed_at=NULL,signed_by=NULL,signed_by_name=NULL WHERE id=$7 AND sonographer_username=$8 AND status='changes_requested' RETURNING id`,[String(report.name).slice(0,250),String(report.type).toLowerCase(),decode(report),String(image.name).slice(0,250),String(image.type).toLowerCase(),decode(image),req.params.id,req.user.username]);
+  if(!r.rowCount) return res.status(404).json({error:'This case is not awaiting your revised files.'}); res.json({ok:true});
 });
 
 // SPA fallback — serve the app for any non-API GET route
