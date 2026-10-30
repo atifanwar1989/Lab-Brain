@@ -1241,10 +1241,10 @@ function aiActivityCheck({from,to,locationId='all'}){
     const cat=(DB.categories||[]).find(c=>c.id===e.catId); const kind=aiCategoryKind(cat);
     addActivity(e.date,e.username,e.locationId,e.ts||e.createdAt,'entry');
     const du=ensureUserDay(e.date,e.username,e.locationId);
-    if(cat?.type==='income'){
+    if(cat?.type==='income' && kind){
       const amount=Number(e.amount||0); du.totalRevenue+=amount;
       const bd=ensureBranchDay(e.date,e.locationId);bd.totalRevenue+=amount;
-      if(kind)du.cats[kind]+=amount;
+      du.cats[kind]+=amount;
     }
   }
   for(const month of Object.keys(DB.onlineEntries||{})) for(const e of DB.onlineEntries[month]||[]) if(dateSet.has(e.date)) addActivity(e.date,e.username,e.locationId,e.ts,'online');
@@ -1290,7 +1290,8 @@ function aiActivityCheck({from,to,locationId='all'}){
       const pPart=pMed>0?` Patient Count was ${Math.round(actual.patientCount||0)} versus a comparable-day median of about ${Math.round(pMed)}.`:'';
       addAlert({date:d,locationId:l.id,username:'',userName:'—',severity:'medium',title:'Unusually low branch revenue',reason:`Branch revenue was Rs ${Math.round(actual.totalRevenue).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()} (around ${Math.round(actual.totalRevenue/med*100)}% of normal).${pPart} This may be genuine low patient volume or missing/incomplete user data; verify against LIS.`});
     }
-    if(actual && actual.totalRevenue===0 && med>0){const activeComparable=base.revenue.filter(x=>x>0).length;base.activeDays=activeComparable;if(activeComparable>=3){const pMed=aiMedian(base.patients.filter(x=>x>0));const pPart=pMed>0?` Comparable-day patient median is about ${Math.round(pMed)}.`:'';addAlert({date:d,locationId:l.id,username:'',userName:'—',severity:'high',title:'No branch revenue recorded',reason:`Comparable ${weekdays[w]} days normally have revenue; this date has Rs 0.${pPart} This may be a closed/quiet day or missing data. Verify against LIS.`});}}
+    // No zero-revenue alert: a department or branch may legitimately have no business on a given day.
+
   }
   // User activity, missing users, and data completeness / category anomalies.
   for(const u of users){
@@ -1325,19 +1326,10 @@ function aiActivityCheck({from,to,locationId='all'}){
       // Patient-count value anomaly against the user's comparable weekday pattern.
       const patientBase=base.patients.filter(x=>x>0), pmed=aiMedian(patientBase);
       if(du.patientEntered&&pmed>0&&patientBase.length>=3){
-        if(du.patientCount===0 || (du.patientCount<pmed*0.5 && Math.abs(du.patientCount-pmed)>=5)){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually low Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify whether patient volume was genuinely low or data is incomplete.`});}
+        if(du.patientCount>0 && du.patientCount<pmed*0.5 && Math.abs(du.patientCount-pmed)>=5){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually low Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify whether patient volume was genuinely low or data is incomplete.`});}
         else if(du.patientCount>pmed*2.0 && Math.abs(du.patientCount-pmed)>=5){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:'Unusually high Patient Count',reason:`Patient Count was ${du.patientCount}; comparable ${weekdays[w]} days have a median of about ${Math.round(pmed)}. Verify against LIS if needed.`});}
       }
-      // Category completeness and amount anomalies. Only categories repeatedly used by this user are expected.
-      for(const cat of ['Laboratory','X-ray','Ultrasound']){
-        const vals=base.cats[cat].filter(x=>x>0),med=aiMedian(vals),presence=base.catPresent[cat]/base.days;
-        const actual=du.cats[cat]||0;
-        if(vals.length>=3&&presence>=0.65){
-          if(actual===0){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:`${cat} entry appears missing`,reason:`${u.name} normally records ${cat} on ${aiPct(presence)}% of comparable ${weekdays[w]} days, with a median around Rs ${Math.round(med).toLocaleString()}. Actual recorded amount: Rs 0. Verify against LIS.`});}
-          else if(med>0&&actual<med*0.5&&Math.abs(actual-med)>=1000){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'medium',title:`Unusually low ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS.`});}
-          else if(med>0&&actual>med*2.0&&Math.abs(actual-med)>=1000){addAlert({date:d,locationId:u.locationId,username:u.username,userName:u.name,severity:'low',title:`Unusually high ${cat} amount`,reason:`Recorded Rs ${Math.round(actual).toLocaleString()} versus a comparable-day median of about Rs ${Math.round(med).toLocaleString()}. Verify against LIS if needed.`});}
-        }
-      }
+      // No department-level missing alert: zero business in a department is valid.
     }
   }
   // Unclosed handovers: flag past dates, and current date only late in Pakistan time.

@@ -196,3 +196,14 @@ A database migration flag prevents the cleanup from repeating on normal restarts
 ## Ultrasound workflow module
 
 The Ultrasound module uses separate PostgreSQL tables (`ultrasound_settings` and `ultrasound_cases`) so existing `app_state` financial/configuration records are not rewritten when ultrasound cases are created or reviewed. In Settings, an Admin assigns existing active accounts as Sonographer and Sonologist. The Sonographer submits patient name, lab number, a report file, and an ultrasound image. The Sonologist account is restricted to the Ultrasound screen, where it can review the files, request changes with comments, or sign off the case. The Sonographer can track status, resubmit revised files when changes are requested, and print a reviewed case. Report/image files are stored in PostgreSQL; uploads are limited to 15 MB per file.
+
+
+## V82 — Revenue Definition, Personal Reports & Activity Monitoring
+- Actual diagnostic revenue is Laboratory + X-Ray + Ultrasound only. Muslim Khatri and Roop Rajput remain separate cash-reconciliation entities and are not added to diagnostic revenue or patient count.
+- Management Report Revenue KPI, comparison, drill-down, trend, forecast, location performance, staff performance and daily summary use the same diagnostic revenue definition.
+- Expected Cash continues to use the existing cash-accounting calculation and is not replaced by the diagnostic revenue figure.
+- Staff accounts can open a read-only My Revenue & Patient Report. The API scopes staff requests to the authenticated username; changing query parameters cannot expose another user's entries.
+- AI Activity Check no longer flags a zero-revenue branch day or a missing department category by itself. It checks diagnostic revenue/patient completeness and historical user activity patterns, reducing alerts for quiet departments and non-running branches.
+- Ameen/Zakat and Muslim Khatri/Roop Rajput cash treatment remains separate from diagnostic revenue.
+- Retains the V81 Ultrasound workflow and salary-slip model. No database schema, migration, or existing-record rewrite is included.
+- No database schema changes, data migrations, transactional rewrites, or data deletion are included in this release.
