@@ -1,3 +1,9 @@
+## V83 — Branch Diagnostic Revenue Category Mapping Fix
+- Fixed under-reporting of diagnostic revenue for branches whose Laboratory income category was saved with legacy spelling variants (`Laboraotry`, `Laboraotory`). These categories now map to Laboratory consistently with `Laboratory` and `Lab`.
+- Applied the same diagnostic category mapping to Management Report revenue cards, comparisons, drill-downs, trends, location performance, staff performance, financial dashboard allocation, and AI activity classification.
+- Expected Closing (Revenue) now uses the same diagnostic-revenue total shown on the Revenue KPI, rather than the broader all-income total.
+- Patient counts, Expected Cash accounting, Ameen/Zakat handling, salary records, and existing transaction data are not rewritten. No database schema change or data migration is required.
+
 ## V73 — Main Settings Restoration & Employee Management
 - Restored the redesigned Main Settings interface from the working settings build without changing the current Salary & Fixed Expenses implementation.
 - Main Settings long lists now remain hidden until searched/filtered, with section search boxes and account/location filters.

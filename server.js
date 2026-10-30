@@ -288,6 +288,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   const revMap={};
   const specialRevenueMap={muslimKhatri:{},roopRajput:{}};
   const normalizedRevenueName=(v)=>String(v||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'');
+  const isDiagnosticRevenueName=(v)=>['laboratory','lab','laboraotory','laboraotry','xray','xraytest','xrayservice','ultrasound','ultrasoundtest','ultrasoundservice'].includes(normalizedRevenueName(v));
   for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
     if(String(e.date||'').slice(0,7)!==month || String(e.locationId||'')==='') continue;
     if(locationId!=='all' && e.locationId!==locationId) continue;
@@ -297,9 +298,9 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     if(name==='muslimkhatri') { const k=e.locationId; specialRevenueMap.muslimKhatri[k]=(specialRevenueMap.muslimKhatri[k]||0)+amount; continue; }
     if(name==='rooprajput') { const k=e.locationId; specialRevenueMap.roopRajput[k]=(specialRevenueMap.roopRajput[k]||0)+amount; continue; }
     let dep=null;
-    if(name==='laboratory') dep='Laboratory';
-    else if(name==='xray') dep='X-Ray';
-    else if(name==='ultrasound') dep='Ultrasound';
+    if(isDiagnosticRevenueName(name)&&['laboratory','lab','laboraotory','laboraotry'].includes(name)) dep='Laboratory';
+    else if(['xray','xraytest','xrayservice'].includes(name)) dep='X-Ray';
+    else if(['ultrasound','ultrasoundtest','ultrasoundservice'].includes(name)) dep='Ultrasound';
     if(!dep) continue;
     const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+amount;
   }
@@ -1180,7 +1181,7 @@ function aiNormalizeCategoryName(name){
 function aiCategoryKind(cat){
   const n=aiNormalizeCategoryName(cat?.name);
   if(cat?.type!=='income') return null;
-  if(n==='laboratory'||n==='lab') return 'Laboratory';
+  if(n==='laboratory'||n==='lab'||n==='laboraotory'||n==='laboraotry') return 'Laboratory';
   if(n==='xray'||n==='xraytest'||n==='xrayservice') return 'X-ray';
   if(n==='ultrasound'||n==='ultrasoundtest'||n==='ultrasoundservice') return 'Ultrasound';
   return null;
