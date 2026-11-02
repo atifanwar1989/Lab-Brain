@@ -213,3 +213,10 @@ The Ultrasound module uses separate PostgreSQL tables (`ultrasound_settings` and
 - Ameen/Zakat and Muslim Khatri/Roop Rajput cash treatment remains separate from diagnostic revenue.
 - Retains the V81 Ultrasound workflow and salary-slip model. No database schema, migration, or existing-record rewrite is included.
 - No database schema changes, data migrations, transactional rewrites, or data deletion are included in this release.
+
+## v84 — Salary advance reconciliation fix
+- Daily Cash advance entries are the source of truth for monthly salary advances.
+- Salary Processing recalculates each employee's monthly advance from current advance expense entries, matching employee and branch and summing multiple entries.
+- Previously saved `advanceSalary` values are no longer reused as authoritative values, preventing stale zero/partial amounts from hiding later advances.
+- Salary inclusion saves and financial salary summaries use the same recalculated advance amount.
+- Existing salary inclusion flags, absence/late inputs, manual deductions, loan deductions, and historical records are preserved.

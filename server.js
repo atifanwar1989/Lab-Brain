@@ -229,16 +229,27 @@ function loanForMonth(employee, month) {
 }
 function monthAddServer(month,n){ const [y,m]=String(month).split('-').map(Number); const d=new Date(y,m-1+n,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
 function daysInMonthServer(month) { const [y,m]=String(month).split('-').map(Number); return new Date(y,m,0).getDate(); }
+function normalizeEmployeeMatch(value) {
+  return String(value||'').normalize('NFKC').trim().replace(/\s+/g,' ').toLocaleLowerCase();
+}
 function advanceSalaryFor(month, employee, locationId) {
   let total=0;
-  for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
-    if(String(e.date||'').slice(0,7)!==month || String(e.person||'').trim().toLowerCase()!==String(employee||'').trim().toLowerCase()) continue;
-    if(locationId && e.locationId!==locationId) continue;
+  const targetEmployee=normalizeEmployeeMatch(employee);
+  for(const entries of Object.values(DB.entries||{})) for(const e of (Array.isArray(entries)?entries:[])) {
+    if(String(e.date||'').slice(0,7)!==String(month).slice(0,7) || normalizeEmployeeMatch(e.person)!==targetEmployee) continue;
+    if(locationId && String(e.locationId||'')!==String(locationId)) continue;
     const c=(DB.categories||[]).find(c=>c.id===e.catId);
-    if(c && c.type==='expense' && /advance/i.test(c.name||'')) total+=Number(e.amount||0);
+    if(c && c.type==='expense' && /advance/i.test(c.name||'')) total+=Math.max(0,Number(e.amount||0));
   }
-  for(const mk of Object.keys(DB.manualRefundEntries||{})) { /* intentionally no salary effect */ }
   return total;
+}
+// Daily Cash is the source of truth for monthly salary advances. Always recalculate
+// from current entries; a saved salary record may contain an outdated advance total.
+function salaryRecordForMonth(month, profile, prior={}) {
+  return calculateSalary(month, profile, {
+    absentDays:prior.absentDays, lateDays:prior.lateDays,
+    manualDeduction:prior.manualDeduction, loanDeduction:prior.loanDeduction
+  });
 }
 function salaryForMonth(month, profile) {
   const history=Array.isArray(profile?.salaryHistory)?profile.salaryHistory.slice().sort((a,b)=>String(a.effectiveFrom||'').localeCompare(String(b.effectiveFrom||''))):[];
@@ -277,7 +288,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     seenEmployees.add(p.employee);
     return true;
   });
-  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=calculateSalary(month,p,old?{absentDays:old.absentDays,lateDays:old.lateDays,manualDeduction:old.manualDeduction,advanceSalary:old.advanceSalary,loanDeduction:old.loanDeduction}:{}); const salaryIncluded=old?old.salaryIncluded!==false:false; return { ...p, salary:rec.basicSalary, month, advanceSalary:rec.advanceSalary, loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec,salaryIncluded}}; });
+  const salaries=employees.map(p=>{ const old=DB.salaryRecords[salaryKey(month,p.employee)]||null; const rec=salaryRecordForMonth(month,p,old||{}); const salaryIncluded=old?old.salaryIncluded!==false:false; return { ...p, salary:rec.basicSalary, month, advanceSalary:rec.advanceSalary, loan:loanForMonth(p.employee,month), hasRecord:!!old, record:{...(old||{}),...rec,salaryIncluded}}; });
   const fixedCategories=(DB.fixedExpenseCategories||[]).filter(c=>c.active!==false&&(locationId==='all'||c.locationId===locationId));
   const fixed=fixedCategories.map(c=>({ ...c, month, amount:Number(DB.fixedExpenses[fixedExpenseKey(month,c.id)]?.amount||0) }));
   const adjustments=[];
@@ -311,7 +322,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     salarySeen.add(p.employee);
     const r=DB.salaryRecords[salaryKey(month,p.employee)], included=r? r.salaryIncluded===true : false;
     if(!included) continue;
-    const calc=r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0);
+    const calc=Number(salaryRecordForMonth(month,p,r||{}).netSalary||0);
     const k=p.locationId+'::'+(p.department==='ALL'?'ALL':p.department); salaryMap[k]=(salaryMap[k]||0)+calc;
   }
   const fixedMap={};
@@ -332,7 +343,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     const roopRajput=Number(specialRevenueMap.roopRajput[loc.id]||0);
     const revenue=diagnosticRevenue+muslimKhatri+roopRajput;
     const masterSetForSalary=new Set(DB.employees||[]), seenSalaryEmployees=new Set();
-    const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id&&p.active!==false&&masterSetForSalary.has(p.employee)&&!seenSalaryEmployees.has(p.employee)&&seenSalaryEmployees.add(p.employee)).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)], included=r? r.salaryIncluded===true : false;if(!included)return sum;return sum+(r?Number(r.netSalary||0):Number(calculateSalary(month,p,{}).netSalary||0))},0);
+    const salary=(DB.employeeProfiles||[]).filter(p=>p.locationId===loc.id&&p.active!==false&&masterSetForSalary.has(p.employee)&&!seenSalaryEmployees.has(p.employee)&&seenSalaryEmployees.add(p.employee)).reduce((sum,p)=>{const r=DB.salaryRecords[salaryKey(month,p.employee)], included=r? r.salaryIncluded===true : false;if(!included)return sum;return sum+Number(salaryRecordForMonth(month,p,r||{}).netSalary||0)},0);
     const utilities=(fixed||[]).filter(f=>f.locationId===loc.id).reduce((sum,f)=>sum+Number(f.amount||0),0);
     const adj=adjustments.find(a=>a.locationId===loc.id)||{vendorPayment:0,referralDoctorShare:0};
     const vendor=Number(adj.vendorPayment||0), referral=Number(adj.referralDoctorShare||0), cash=Number(cashExpenseMap[loc.id]||0);
@@ -457,7 +468,7 @@ app.put('/api/finance-management/salary-inclusions', auth, managementOnly, async
     const profile=DB.employeeProfiles.find(p=>p.employee===employee&&p.active!==false);
     if(!profile) continue;
     const key=salaryKey(month,employee), prior=DB.salaryRecords[key]||null;
-    const calc=prior?calculateSalary(month,profile,{absentDays:prior.absentDays,lateDays:prior.lateDays,manualDeduction:prior.manualDeduction,advanceSalary:prior.advanceSalary,loanDeduction:prior.loanDeduction}):calculateSalary(month,profile,{});
+    const calc=salaryRecordForMonth(month,profile,prior||{});
     DB.salaryRecords[key]={...(prior||{}),month,employee,locationId:profile.locationId,department:profile.department,...calc,salaryIncluded:item.salaryIncluded===true,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
   }
   try{await persist();res.json({ok:true,salaryRecords:DB.salaryRecords});}
@@ -470,7 +481,7 @@ app.put('/api/finance-management/salary-inclusion', auth, managementOnly, async 
   const profile=DB.employeeProfiles.find(p=>p.employee===employee&&p.active!==false);
   if(!/^\d{4}-\d{2}$/.test(month)||!profile)return res.status(400).json({error:'Valid month and employee profile are required.'});
   const key=salaryKey(month,employee), prior=DB.salaryRecords[key]||null;
-  const calc=prior?calculateSalary(month,profile,{absentDays:prior.absentDays,lateDays:prior.lateDays,manualDeduction:prior.manualDeduction,advanceSalary:prior.advanceSalary,loanDeduction:prior.loanDeduction}):calculateSalary(month,profile,{});
+  const calc=salaryRecordForMonth(month,profile,prior||{});
   const included=req.body.salaryIncluded===true;
   DB.salaryRecords[key]={...(prior||{}),month,employee,locationId:profile.locationId,department:profile.department,...calc,salaryIncluded:included,updatedAt:Date.now(),updatedByUsername:req.user.username,updatedByName:req.user.name};
   try{await persist();res.json({ok:true,record:DB.salaryRecords[key]});}catch(e){console.error(e);res.status(500).json({error:'Could not save salary selection.'});}
