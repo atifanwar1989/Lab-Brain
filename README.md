@@ -220,3 +220,18 @@ The Ultrasound module uses separate PostgreSQL tables (`ultrasound_settings` and
 - Previously saved `advanceSalary` values are no longer reused as authoritative values, preventing stale zero/partial amounts from hiding later advances.
 - Salary inclusion saves and financial salary summaries use the same recalculated advance amount.
 - Existing salary inclusion flags, absence/late inputs, manual deductions, loan deductions, and historical records are preserved.
+
+
+## v85 focused updates (2026-11-04)
+
+- Reviewer account creation and role changes now require a valid assigned location.
+- Reviewer API access is read-only and restricted to approved reporting endpoints; all write/admin/backup/finance endpoints are denied server-side.
+- Reviewer configuration response is minimized and does not expose employee profiles, staff accounts, or other branch locations.
+- Reviewer report and CSV requests are forced to the account's assigned location on the server.
+- Salary processing now includes an employee-name search alongside the location filter.
+- Salary slip printout now uses an earnings/deductions layout and conditionally displays loan details only for employees with a loan. It includes employee details, absent/late counts, overtime if a saved overtime amount exists, net salary, and amount in words.
+- Employee profile saving now falls back to employee master details for department, designation, joining date, and account number, reducing blank designation synchronization.
+
+### Not yet included in this package
+
+The full HR Letters & Certificates module, one-time chronological Employee ID generation workflow, and full NMDC salary-slip branding/template with leave balances and complete payroll component capture still require implementation and verification. Ultrasound report access for Reviewers is intentionally not enabled until its branch-level data filtering can be verified. Do not treat those items as completed in this release.

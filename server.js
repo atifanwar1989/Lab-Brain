@@ -77,6 +77,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// Reviewer accounts are strictly read-only and branch-scoped at the API boundary.
+app.use((req,res,next)=>{
+  if(!req.path.startsWith('/api/') || req.path==='/api/login') return next();
+  const h=req.headers.authorization||'', token=h.startsWith('Bearer ')?h.slice(7):'';
+  if(!token||!SECRET||!DB) return next();
+  try{
+    const claims=jwt.verify(token,SECRET), u=(DB.users||[]).find(x=>x.id===claims.id||x.username===claims.username);
+    if(!u||u.active===false||u.role!=='reviewer') return next();
+    if(req.path==='/api/me'||req.path==='/api/change-password') return next();
+    const allowed=req.method==='GET' && ['/api/config','/api/management-summary','/api/entries','/api/report.csv','/api/online','/api/manual-refund','/api/patients','/api/entries-months'].some(x=>req.path===x||req.path.startsWith(x+'/'));
+    if(!allowed) return res.status(403).json({error:'Reviewer accounts have read-only access to their assigned branch reports.'});
+    if(!u.locationId) return res.status(403).json({error:'No branch is assigned to this Reviewer account.'});
+    req.query.locationId=u.locationId; req.query.locationIds=u.locationId;
+    if(req.query.location!=='undefined') req.query.location=u.locationId;
+    next();
+  }catch(_){next();}
+});
+
 // ---------------- Auth ----------------
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
@@ -121,6 +139,7 @@ app.get('/api/config', auth, (req, res) => {
     id: u.id, name: u.name, username: u.username, role: u.role, locationId: u.locationId || null,
     active: u.active !== false, statusHistory: Array.isArray(u.statusHistory) ? u.statusHistory : []
   }));
+  if(req.user.role==='reviewer'){ const id=req.user.locationId; return res.json({locations:locations.filter(l=>l.id===id),categories:DB.categories||[],employees:[],vendors:[],doctors:[],customLists:[],specialCards:[],staff:[],employeeProfiles:[],employeeDetails:{},fixedExpenseCategories:[]}); }
   res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], specialCards: DB.specialCards || [], staff, employeeProfiles: DB.employeeProfiles || [], employeeDetails: DB.employeeDetails || {}, fixedExpenseCategories: DB.fixedExpenseCategories || [] });
 });
 app.put('/api/config/categories', auth, adminOnly, async (req, res) => {
@@ -431,7 +450,8 @@ app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>
       if(idx>=0) history[idx]=revision; else history.push(revision);
       history.sort((a,b)=>String(a.effectiveFrom||'').localeCompare(String(b.effectiveFrom||'')));
     }
-    normalized.push({employee,locationId,department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(raw.department)?raw.department:(old.department||'ALL'),designation:String(raw.designation??old.designation??'').trim(),dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??'').slice(0,10),accountNumber:String(raw.accountNumber??old.accountNumber??'').trim(),salary,salaryHistory:history,sickLeaveEntitlement:Math.max(0,Number(raw.sickLeaveEntitlement??old.sickLeaveEntitlement??0)),casualLeaveEntitlement:Math.max(0,Number(raw.casualLeaveEntitlement??old.casualLeaveEntitlement??0)),annualLeaveEntitlement:Math.max(0,Number(raw.annualLeaveEntitlement??old.annualLeaveEntitlement??0)),active:raw.active!==false});
+    const master=DB.employeeDetails?.[employee]||{};
+    normalized.push({employee,locationId,department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(raw.department)?raw.department:(old.department||master.department||'ALL'),designation:String(raw.designation??old.designation??master.designation??'').trim(),dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??master.dateOfJoining??'').slice(0,10),accountNumber:String(raw.accountNumber??old.accountNumber??master.accountNumber??'').trim(),salary,salaryHistory:history,sickLeaveEntitlement:Math.max(0,Number(raw.sickLeaveEntitlement??old.sickLeaveEntitlement??0)),casualLeaveEntitlement:Math.max(0,Number(raw.casualLeaveEntitlement??old.casualLeaveEntitlement??0)),annualLeaveEntitlement:Math.max(0,Number(raw.annualLeaveEntitlement??old.annualLeaveEntitlement??0)),active:raw.active!==false});
   }
   // Preserve profiles not included by a filtered UI view.
   for(const old of DB.employeeProfiles||[]){ if(!seen.has(old.employee)) normalized.push(old); }
@@ -533,9 +553,9 @@ app.post('/api/users', auth, adminOnly, async (req, res) => {
   if (!name || !username || !password) return res.status(400).json({ error: 'Name, username and password are required' });
   if (DB.users.some(u => u.username === username)) return res.status(400).json({ error: 'Username already exists' });
   const newRole = ['admin','reviewer','staff'].includes(role) ? role : 'staff';
-  if (newRole === 'staff' && !(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: 'A location is required for Staff accounts.' });
+  if (['staff','reviewer'].includes(newRole) && !(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: `A valid location is required for ${newRole==='reviewer'?'Reviewer':'Staff'} accounts.` });
   const createdDate = todayPakistan();
-  DB.users.push({ id: username.toLowerCase(), name, username, passwordHash: bcrypt.hashSync(password, 10), role: newRole, locationId: newRole === 'staff' ? locationId : null, active: true, statusHistory: [{active:true,effectiveDate:createdDate}] });
+  DB.users.push({ id: username.toLowerCase(), name, username, passwordHash: bcrypt.hashSync(password, 10), role: newRole, locationId: ['staff','reviewer'].includes(newRole) ? locationId : null, active: true, statusHistory: [{active:true,effectiveDate:createdDate}] });
   try { await persist(); res.json({ ok: true }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Could not save. Please try again.' }); }
 });
@@ -559,10 +579,10 @@ app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
     if (u.id === 'admin' && newRole !== 'admin') return res.status(400).json({ error: 'The main admin account cannot be changed to Staff/Reviewer.' });
     if (u.role === 'admin' && newRole !== 'admin' && DB.users.filter(x => x.role === 'admin').length <= 1) return res.status(400).json({ error: 'At least one Admin account must remain.' });
     if (u.id === req.user.id && newRole !== 'admin') return res.status(400).json({ error: 'You cannot change your own account from Admin to Staff/Reviewer.' });
-    if (newRole === 'staff' && !(DB.locations || []).some(l => l.id === (locationId || u.locationId))) return res.status(400).json({ error: 'A valid location is required for Staff.' });
+    if (['staff','reviewer'].includes(newRole) && !(DB.locations || []).some(l => l.id === (locationId || u.locationId))) return res.status(400).json({ error: `A valid location is required for ${newRole==='reviewer'?'Reviewer':'Staff'}.` });
     u.role = newRole;
-    u.locationId = newRole === 'staff' ? (locationId || u.locationId) : null;
-  } else if (u.role === 'staff' && locationId) {
+    u.locationId = ['staff','reviewer'].includes(newRole) ? (locationId || u.locationId) : null;
+  } else if (['staff','reviewer'].includes(u.role) && locationId) {
     if (!(DB.locations || []).some(l => l.id === locationId)) return res.status(400).json({ error: 'Invalid location.' });
     u.locationId = locationId;
   }
