@@ -492,6 +492,8 @@ app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>
     }
     const master=DB.employeeDetails?.[employee]||{};
     normalized.push({employee,employeeId:old.employeeId||master.employeeId||null,locationId,department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(raw.department)?raw.department:(old.department||master.department||'ALL'),designation:String(raw.designation??old.designation??master.designation??'').trim(),dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??master.dateOfJoining??'').slice(0,10),accountNumber:String(raw.accountNumber??old.accountNumber??master.accountNumber??'').trim(),salary,salaryHistory:history,sickLeaveEntitlement:Math.max(0,Number(raw.sickLeaveEntitlement??old.sickLeaveEntitlement??0)),casualLeaveEntitlement:Math.max(0,Number(raw.casualLeaveEntitlement??old.casualLeaveEntitlement??0)),annualLeaveEntitlement:Math.max(0,Number(raw.annualLeaveEntitlement??old.annualLeaveEntitlement??0)),active:raw.active!==false});
+    DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
+    DB.employeeDetails[employee]={...master,employee,dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??master.dateOfJoining??'').slice(0,10),employeeId:old.employeeId||master.employeeId||null};
   }
   // Preserve profiles not included by a filtered UI view.
   for(const old of DB.employeeProfiles||[]){ if(!seen.has(old.employee)) normalized.push(old); }

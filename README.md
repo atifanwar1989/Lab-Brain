@@ -1,3 +1,13 @@
+## V90 — Date of Joining Visibility & Employee ID Validation
+
+- Added an editable Date of Joining (DOJ) column to Employee Profile & Salary Setup.
+- Existing DOJ values are displayed from employee details/profile data; missing dates are visibly labelled “DOJ Missing”.
+- Saving employee profiles now persists DOJ to both the employee profile and employee master details, so ID generation reads the same saved date.
+- Employee ID generation now stops and lists every employee with a missing/invalid DOJ before generating any new IDs.
+- The generation preview remains chronological; existing Employee IDs are not changed.
+- Employee Profile PDF now includes Employee ID and Date of Joining.
+- No database reset or historical salary/financial record deletion is introduced.
+
 ## V89 — Employee Disable Date & Former Employee Workflow
 
 - Fixed Former Employee tab rendering so it displays its own former-employee list instead of falling back to Monthly Salary Processing.
