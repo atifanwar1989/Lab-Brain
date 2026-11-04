@@ -1,3 +1,19 @@
+## V86 — Ultrasound Upload, Camera, Correction & Withdrawal Update
+- Ultrasound reports now accept common document and image formats instead of PDF-only uploads; ultrasound images accept common image formats.
+- Sonographers can attach multiple ultrasound images, and mobile users can use the camera capture control alongside file selection.
+- Sonographers can edit patient/lab details and replace report/images while a case is pending review or changes have been requested.
+- Every submitted-case edit saves the previous report, primary image, additional images and patient details in a version-history table before updating the active case.
+- Any edit clears the prior review comments/sign-off and returns the case to Pending Review so the Sonologist reviews the latest submission.
+- Sonographers can withdraw pending or changes-requested cases. Withdrawal is a soft status change; case data and files remain retained rather than being permanently deleted.
+- Reviewed/approved cases are protected from direct editing or withdrawal.
+- Ultrasound archive export/import includes additional images and preserves withdrawn status. Existing cases and other Lab-Brain modules are not reset.
+
+## V86 — Monthly Salary Employee Search Focus Fix
+- Fixed the Monthly Salary Processing employee search so typing multiple characters does not lose focus after each character.
+- Search now filters the already-rendered salary rows directly without re-rendering the page on every keystroke.
+- Location filtering, salary calculations, inclusion checkboxes, row actions, and saved salary records remain unchanged.
+- No database schema change, data migration, or transactional data reset is required.
+
 ## V83 — Branch Diagnostic Revenue Category Mapping Fix
 - Fixed under-reporting of diagnostic revenue for branches whose Laboratory income category was saved with legacy spelling variants (`Laboraotry`, `Laboraotory`). These categories now map to Laboratory consistently with `Laboratory` and `Lab`.
 - Applied the same diagnostic category mapping to Management Report revenue cards, comparisons, drill-downs, trends, location performance, staff performance, financial dashboard allocation, and AI activity classification.

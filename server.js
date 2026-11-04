@@ -14,7 +14,7 @@ let SECRET = null;
 async function persist(data = DB) { await save(data); }
 
 const app = express();
-app.use(express.json({ limit: '48mb' }));
+app.use(express.json({ limit: '160mb' }));
 // Prevent stale deployed frontend code from being served from browser/proxy cache.
 app.use((req,res,next)=>{ if(req.path==='/' || req.path.endsWith('.html')) res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate'); next(); });
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0 }));
@@ -1496,6 +1496,18 @@ async function ensureUltrasoundTables() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       reviewed_at TIMESTAMPTZ, signed_by TEXT, signed_by_name TEXT
     )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS ultrasound_case_attachments (
+      id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES ultrasound_cases(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL, file_type TEXT NOT NULL, file_data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS ultrasound_case_versions (
+      id BIGSERIAL PRIMARY KEY, case_id TEXT NOT NULL REFERENCES ultrasound_cases(id) ON DELETE CASCADE,
+      patient_name TEXT NOT NULL, lab_number TEXT NOT NULL, report_name TEXT NOT NULL,
+      report_type TEXT NOT NULL, report_data BYTEA NOT NULL, image_name TEXT NOT NULL,
+      image_type TEXT NOT NULL, image_data BYTEA NOT NULL, extra_images JSONB NOT NULL DEFAULT '[]'::jsonb,
+      changed_by TEXT NOT NULL, changed_at TIMESTAMPTZ NOT NULL DEFAULT now(), change_note TEXT NOT NULL DEFAULT ''
+    )`);
   })().catch(e => { ultrasoundTablesReady = null; throw e; });
   await ultrasoundTablesReady;
 }
@@ -1527,10 +1539,12 @@ async function ultrasoundAccess(req, res, next) {
   } catch (e) { console.error('Ultrasound access check failed:', e); return res.status(500).json({ error: 'Could not verify Ultrasound access.' }); }
 }
 function ultrasoundFileOk(file, allowed) {
-  if (!file || typeof file.data !== 'string' || !file.name || !file.type) return false;
-  if (!allowed.includes(String(file.type).toLowerCase())) return false;
+  if (!file || typeof file.data !== 'string' || !file.name) return false;
+  const type = String(file.type || 'application/octet-stream').toLowerCase();
+  const safeTypes = ['application/pdf','image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/tiff','image/bmp','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','text/plain'];
+  if (!(allowed || safeTypes).includes(type)) return false;
   const raw = file.data.replace(/^data:[^,]*;base64,/, '');
-  return /^[A-Za-z0-9+/]*={0,2}$/.test(raw) && raw.length > 0 && raw.length <= 20 * 1024 * 1024;
+  return /^[A-Za-z0-9+/]*={0,2}$/.test(raw) && raw.length > 0 && raw.length <= 28 * 1024 * 1024;
 }
 function ultrasoundCaseRow(r) { return { id:r.id, patientName:r.patient_name, labNumber:r.lab_number, sonographerUsername:r.sonographer_username, sonographerName:r.sonographer_name, sonologistUsername:r.sonologist_username, status:r.status, reportName:r.report_name, imageName:r.image_name, sonographerNote:r.sonographer_note, reviewComments:r.review_comments, createdAt:r.created_at, updatedAt:r.updated_at, reviewedAt:r.reviewed_at, signedBy:r.signed_by_name }; }
 app.get('/api/ultrasound/access', auth, async (req,res) => {
@@ -1613,14 +1627,17 @@ app.get('/api/ultrasound/archive/export', auth, ultrasoundAccess, async (req,res
   res.setHeader('Content-Disposition',`attachment; filename="lab-brain-ultrasound-${month}.zip"`);
   archive.on('error',err=>{console.error('Ultrasound archive export failed:',err);if(!res.headersSent)res.status(500);res.end();});
   archive.pipe(res);
-  const cases=q.rows.map((r,i)=>{
-    const folder=`cases/${String(i+1).padStart(5,'0')}`;
+  const cases=[];
+  for(let i=0;i<q.rows.length;i++){
+    const r=q.rows[i],folder=`cases/${String(i+1).padStart(5,'0')}`;
     const reportPath=`${folder}/report${path.extname(r.report_name||'')||'.bin'}`;
     const imagePath=`${folder}/image${path.extname(r.image_name||'')||'.bin'}`;
     archive.append(Buffer.from(r.report_data),{name:reportPath});
     archive.append(Buffer.from(r.image_data),{name:imagePath});
-    return {id:r.id,patient_name:r.patient_name,lab_number:r.lab_number,sonographer_username:r.sonographer_username,sonographer_name:r.sonographer_name,sonologist_username:r.sonologist_username,status:r.status,report_name:r.report_name,report_type:r.report_type,report_path:reportPath,image_name:r.image_name,image_type:r.image_type,image_path:imagePath,sonographer_note:r.sonographer_note,review_comments:r.review_comments,created_at:r.created_at,updated_at:r.updated_at,reviewed_at:r.reviewed_at,signed_by:r.signed_by,signed_by_name:r.signed_by_name};
-  });
+    const extra=await pool.query('SELECT id,file_name,file_type,file_data FROM ultrasound_case_attachments WHERE case_id=$1 ORDER BY created_at,id',[r.id]);
+    const extraImages=extra.rows.map((x,j)=>{const p=`${folder}/image-${j+2}${path.extname(x.file_name||'')||'.bin'}`;archive.append(Buffer.from(x.file_data),{name:p});return {id:x.id,name:x.file_name,type:x.file_type,path:p};});
+    cases.push({id:r.id,patient_name:r.patient_name,lab_number:r.lab_number,sonographer_username:r.sonographer_username,sonographer_name:r.sonographer_name,sonologist_username:r.sonologist_username,status:r.status,report_name:r.report_name,report_type:r.report_type,report_path:reportPath,image_name:r.image_name,image_type:r.image_type,image_path:imagePath,extra_images:extraImages,sonographer_note:r.sonographer_note,review_comments:r.review_comments,created_at:r.created_at,updated_at:r.updated_at,reviewed_at:r.reviewed_at,signed_by:r.signed_by,signed_by_name:r.signed_by_name});
+  }
   archive.append(JSON.stringify({format:'lab-brain-ultrasound-archive',version:1,month,exportedAt:new Date().toISOString(),caseCount:cases.length,cases},null,2),{name:'manifest.json'});
   archive.finalize();
 });
@@ -1645,7 +1662,12 @@ app.post('/api/ultrasound/archive/import', express.raw({type:'application/zip',l
         const exists=await client.query('SELECT 1 FROM ultrasound_cases WHERE id=$1',[String(c.id)]);
         if(exists.rowCount){skipped++;continue;}
         await client.query(`INSERT INTO ultrasound_cases(id,patient_name,lab_number,sonographer_username,sonographer_name,sonologist_username,status,report_name,report_type,report_data,image_name,image_type,image_data,sonographer_note,review_comments,created_at,updated_at,reviewed_at,signed_by,signed_by_name)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,[String(c.id),String(c.patient_name),String(c.lab_number),String(c.sonographer_username||'archived'),String(c.sonographer_name||'Archived user'),c.sonologist_username||null,['pending_review','changes_requested','reviewed'].includes(c.status)?c.status:'pending_review',String(c.report_name||'report.pdf'),String(c.report_type||'application/pdf'),await rf.buffer(),String(c.image_name||'image.bin'),String(c.image_type||'application/octet-stream'),await imf.buffer(),String(c.sonographer_note||''),String(c.review_comments||''),c.created_at||new Date().toISOString(),c.updated_at||c.created_at||new Date().toISOString(),c.reviewed_at||null,c.signed_by||null,c.signed_by_name||null]);
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,[String(c.id),String(c.patient_name),String(c.lab_number),String(c.sonographer_username||'archived'),String(c.sonographer_name||'Archived user'),c.sonologist_username||null,['pending_review','changes_requested','reviewed','withdrawn'].includes(c.status)?c.status:'pending_review',String(c.report_name||'report.pdf'),String(c.report_type||'application/pdf'),await rf.buffer(),String(c.image_name||'image.bin'),String(c.image_type||'application/octet-stream'),await imf.buffer(),String(c.sonographer_note||''),String(c.review_comments||''),c.created_at||new Date().toISOString(),c.updated_at||c.created_at||new Date().toISOString(),c.reviewed_at||null,c.signed_by||null,c.signed_by_name||null]);
+        for(const x of (Array.isArray(c.extra_images)?c.extra_images:[])){
+          if(!x.path||x.path.includes('..')) throw new Error('Archive manifest contains an invalid additional image path.');
+          const xf=byName.get(x.path); if(!xf) throw new Error(`An additional image is missing for case ${c.lab_number}.`);
+          await client.query('INSERT INTO ultrasound_case_attachments(id,case_id,file_name,file_type,file_data) VALUES($1,$2,$3,$4,$5)',[String(x.id||('usa_'+crypto.randomUUID())),String(c.id),String(x.name||'image.bin'),String(x.type||'application/octet-stream'),await xf.buffer()]);
+        }
         imported++;
       }
       await client.query('COMMIT');
@@ -1674,19 +1696,20 @@ app.get('/api/ultrasound/cases', auth, ultrasoundAccess, async (req,res) => {
 app.post('/api/ultrasound/cases', auth, ultrasoundAccess, async (req,res) => {
   if (req.ultrasoundRole!=='sonographer') return res.status(403).json({error:'Only the assigned Sonographer can submit cases.'});
   const patientName=String(req.body?.patientName||'').trim(), labNumber=String(req.body?.labNumber||'').trim();
-  const report=req.body?.report, image=req.body?.image, note=String(req.body?.note||'').trim();
-  const reportTypes=['application/pdf','image/jpeg','image/png','image/webp'];
-  const imageTypes=['image/jpeg','image/png','image/webp'];
+  const report=req.body?.report, images=Array.isArray(req.body?.images)?req.body.images:(req.body?.image?[req.body.image]:[]), image=images[0], note=String(req.body?.note||'').trim();
+  const reportTypes=['application/pdf','image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/tiff','image/bmp','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','text/plain'];
+  const imageTypes=['image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/tiff','image/bmp'];
   if (!patientName || !labNumber) return res.status(400).json({error:'Patient name and lab number are required.'});
   if (!ultrasoundFileOk(report,reportTypes)) return res.status(400).json({error:'Upload a valid report PDF or image file (max 15 MB).'});
-  if (!ultrasoundFileOk(image,imageTypes)) return res.status(400).json({error:'Upload a valid ultrasound image (JPG, PNG or WEBP; max 15 MB).'});
+  if (!images.length || images.length>20 || images.some(f=>!ultrasoundFileOk(f,imageTypes))) return res.status(400).json({error:'Upload 1–20 valid ultrasound images (max 20 MB each).'});
   const sonologistUsername = req.ultrasoundAssignments.sonologistUsername || (DB.users||[]).find(u=>u.role==='ultrasound'&&u.ultrasoundRole==='sonologist'&&u.active!==false)?.username || '';
   if (!sonologistUsername) return res.status(400).json({error:'No active Sonologist account exists. Ask Admin to create one first.'});
   const decode=f=>Buffer.from(f.data.replace(/^data:[^,]*;base64,/,''),'base64');
   const id='us_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9);
   await ensureUltrasoundTables();
   await pool.query(`INSERT INTO ultrasound_cases(id,patient_name,lab_number,sonographer_username,sonographer_name,sonologist_username,status,report_name,report_type,report_data,image_name,image_type,image_data,sonographer_note)
-    VALUES($1,$2,$3,$4,$5,$6,'pending_review',$7,$8,$9,$10,$11,$12,$13)`,[id,patientName,labNumber,req.user.username,req.user.name,sonologistUsername,String(report.name).slice(0,250),String(report.type).toLowerCase(),decode(report),String(image.name).slice(0,250),String(image.type).toLowerCase(),decode(image),note]);
+    VALUES($1,$2,$3,$4,$5,$6,'pending_review',$7,$8,$9,$10,$11,$12,$13)`,[id,patientName,labNumber,req.user.username,req.user.name,sonologistUsername,String(report.name).slice(0,250),String(report.type||'application/octet-stream').toLowerCase(),decode(report),String(image.name).slice(0,250),String(image.type||'application/octet-stream').toLowerCase(),decode(image),note]);
+  for (const f of images.slice(1)) await pool.query('INSERT INTO ultrasound_case_attachments(id,case_id,file_name,file_type,file_data) VALUES($1,$2,$3,$4,$5)',['usa_'+crypto.randomUUID(),id,String(f.name).slice(0,250),String(f.type||'application/octet-stream').toLowerCase(),decode(f)]);
   res.json({ok:true,id});
 });
 app.get('/api/ultrasound/cases/:id', auth, ultrasoundAccess, async (req,res) => {
@@ -1696,7 +1719,10 @@ app.get('/api/ultrasound/cases/:id', auth, ultrasoundAccess, async (req,res) => 
   const c=r.rows[0];
   if(req.ultrasoundRole==='sonographer'&&c.sonographer_username!==req.user.username) return res.status(403).json({error:'This case is not assigned to your account.'});
   if(req.ultrasoundRole==='sonologist'&&c.sonologist_username!==req.user.username) return res.status(403).json({error:'This case is not assigned to your account.'});
-  res.json({case:ultrasoundCaseRow(c),report:{name:c.report_name,type:c.report_type,data:'data:'+c.report_type+';base64,'+Buffer.from(c.report_data).toString('base64')},image:{name:c.image_name,type:c.image_type,data:'data:'+c.image_type+';base64,'+Buffer.from(c.image_data).toString('base64')}});
+  const extras=await pool.query('SELECT id,file_name,file_type,file_data FROM ultrasound_case_attachments WHERE case_id=$1 ORDER BY created_at,id',[c.id]);
+  const image={name:c.image_name,type:c.image_type,data:'data:'+c.image_type+';base64,'+Buffer.from(c.image_data).toString('base64')};
+  const images=[image,...extras.rows.map(x=>({id:x.id,name:x.file_name,type:x.file_type,data:'data:'+x.file_type+';base64,'+Buffer.from(x.file_data).toString('base64')}))];
+  res.json({case:ultrasoundCaseRow(c),report:{name:c.report_name,type:c.report_type,data:'data:'+c.report_type+';base64,'+Buffer.from(c.report_data).toString('base64')},image,images});
 });
 app.post('/api/ultrasound/cases/:id/review', auth, ultrasoundAccess, async (req,res) => {
   if(req.ultrasoundRole!=='sonologist') return res.status(403).json({error:'Only the assigned Sonologist can review and sign off cases.'});
@@ -1711,12 +1737,66 @@ app.post('/api/ultrasound/cases/:id/review', auth, ultrasoundAccess, async (req,
 });
 app.post('/api/ultrasound/cases/:id/resubmit', auth, ultrasoundAccess, async (req,res) => {
   if(req.ultrasoundRole!=='sonographer') return res.status(403).json({error:'Only the assigned Sonographer can resubmit cases.'});
-  const report=req.body?.report, image=req.body?.image;
-  const reportTypes=['application/pdf','image/jpeg','image/png','image/webp'], imageTypes=['image/jpeg','image/png','image/webp'];
-  if(!ultrasoundFileOk(report,reportTypes)||!ultrasoundFileOk(image,imageTypes)) return res.status(400).json({error:'Please upload a valid report and ultrasound image, each no larger than 15 MB.'});
-  const decode=f=>Buffer.from(f.data.replace(/^data:[^,]*;base64,/,''),'base64'); await ensureUltrasoundTables();
-  const r=await pool.query(`UPDATE ultrasound_cases SET report_name=$1,report_type=$2,report_data=$3,image_name=$4,image_type=$5,image_data=$6,status='pending_review',review_comments='',updated_at=now(),reviewed_at=NULL,signed_by=NULL,signed_by_name=NULL WHERE id=$7 AND sonographer_username=$8 AND status='changes_requested' RETURNING id`,[String(report.name).slice(0,250),String(report.type).toLowerCase(),decode(report),String(image.name).slice(0,250),String(image.type).toLowerCase(),decode(image),req.params.id,req.user.username]);
-  if(!r.rowCount) return res.status(404).json({error:'This case is not awaiting your revised files.'}); res.json({ok:true});
+  const report=req.body?.report, images=Array.isArray(req.body?.images)?req.body.images:(req.body?.image?[req.body.image]:null);
+  const reportTypes=['application/pdf','image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/tiff','image/bmp','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','text/plain'];
+  const imageTypes=['image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/tiff','image/bmp'];
+  if(report&&!ultrasoundFileOk(report,reportTypes)) return res.status(400).json({error:'Choose a supported report file.'});
+  if(images&&(!images.length||images.length>20||images.some(f=>!ultrasoundFileOk(f,imageTypes)))) return res.status(400).json({error:'Choose 1–20 supported ultrasound images.'});
+  await ensureUltrasoundTables();
+  const current=await pool.query(`SELECT * FROM ultrasound_cases WHERE id=$1 AND sonographer_username=$2 AND status='changes_requested'`,[req.params.id,req.user.username]);
+  if(!current.rowCount) return res.status(404).json({error:'This case is not awaiting your revised files.'});
+  const c=current.rows[0], decode=f=>Buffer.from(f.data.replace(/^data:[^,]*;base64,/,''),'base64');
+  const extra=await pool.query('SELECT file_name,file_type,file_data FROM ultrasound_case_attachments WHERE case_id=$1 ORDER BY created_at,id',[c.id]);
+  await pool.query(`INSERT INTO ultrasound_case_versions(case_id,patient_name,lab_number,report_name,report_type,report_data,image_name,image_type,image_data,extra_images,changed_by,change_note)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)`,
+    [c.id,c.patient_name,c.lab_number,c.report_name,c.report_type,c.report_data,c.image_name,c.image_type,c.image_data,JSON.stringify(extra.rows.map(x=>({name:x.file_name,type:x.file_type,data:Buffer.from(x.file_data).toString('base64')}))),req.user.username,'Resubmission after reviewer requested changes']);
+  const rfile=report||null, firstImage=images?images[0]:null;
+  await pool.query(`UPDATE ultrasound_cases SET
+    report_name=COALESCE($1,report_name),report_type=COALESCE($2,report_type),report_data=COALESCE($3,report_data),
+    image_name=COALESCE($4,image_name),image_type=COALESCE($5,image_type),image_data=COALESCE($6,image_data),
+    status='pending_review',review_comments='',updated_at=now(),reviewed_at=NULL,signed_by=NULL,signed_by_name=NULL
+    WHERE id=$7`,[rfile?String(rfile.name).slice(0,250):null,rfile?String(rfile.type||'application/octet-stream').toLowerCase():null,rfile?decode(rfile):null,
+      firstImage?String(firstImage.name).slice(0,250):null,firstImage?String(firstImage.type||'application/octet-stream').toLowerCase():null,firstImage?decode(firstImage):null,c.id]);
+  if(images){await pool.query('DELETE FROM ultrasound_case_attachments WHERE case_id=$1',[c.id]);for(const f of images.slice(1))await pool.query('INSERT INTO ultrasound_case_attachments(id,case_id,file_name,file_type,file_data) VALUES($1,$2,$3,$4,$5)', ['usa_'+crypto.randomUUID(),c.id,String(f.name).slice(0,250),String(f.type||'application/octet-stream').toLowerCase(),decode(f)]);}
+  res.json({ok:true});
+});
+
+// Sonographer may correct a submitted case while it is pending review; every change is versioned and re-queued.
+app.put('/api/ultrasound/cases/:id', auth, ultrasoundAccess, async (req,res) => {
+  if(req.ultrasoundRole!=='sonographer') return res.status(403).json({error:'Only the assigned Sonographer can edit a case.'});
+  await ensureUltrasoundTables();
+  const found=await pool.query(`SELECT * FROM ultrasound_cases WHERE id=$1 AND sonographer_username=$2 AND status IN ('pending_review','changes_requested')`,[req.params.id,req.user.username]);
+  if(!found.rowCount) return res.status(409).json({error:'Only your pending or changes-requested cases can be edited. Approved cases require an Admin correction process.'});
+  const c=found.rows[0], patientName=String(req.body?.patientName??c.patient_name).trim(), labNumber=String(req.body?.labNumber??c.lab_number).trim();
+  const report=req.body?.report||null, images=Array.isArray(req.body?.images)?req.body.images:null;
+  const reportTypes=['application/pdf','image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/tiff','image/bmp','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','text/plain'];
+  const imageTypes=['image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/tiff','image/bmp'];
+  if(!patientName||!labNumber) return res.status(400).json({error:'Patient name and lab number are required.'});
+  if(report&&!ultrasoundFileOk(report,reportTypes)) return res.status(400).json({error:'Choose a supported report file.'});
+  if(images&&(!images.length||images.length>20||images.some(f=>!ultrasoundFileOk(f,imageTypes)))) return res.status(400).json({error:'Choose 1–20 supported ultrasound images.'});
+  const extras=await pool.query('SELECT file_name,file_type,file_data FROM ultrasound_case_attachments WHERE case_id=$1 ORDER BY created_at,id',[c.id]);
+  const decode=f=>Buffer.from(f.data.replace(/^data:[^,]*;base64,/,''),'base64');
+  await pool.query(`INSERT INTO ultrasound_case_versions(case_id,patient_name,lab_number,report_name,report_type,report_data,image_name,image_type,image_data,extra_images,changed_by,change_note)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)`,
+    [c.id,c.patient_name,c.lab_number,c.report_name,c.report_type,c.report_data,c.image_name,c.image_type,c.image_data,JSON.stringify(extras.rows.map(x=>({name:x.file_name,type:x.file_type,data:Buffer.from(x.file_data).toString('base64')}))),req.user.username,'User edited submitted case']);
+  const first=images?.[0]||null;
+  await pool.query(`UPDATE ultrasound_cases SET patient_name=$1,lab_number=$2,
+    report_name=COALESCE($3,report_name),report_type=COALESCE($4,report_type),report_data=COALESCE($5,report_data),
+    image_name=COALESCE($6,image_name),image_type=COALESCE($7,image_type),image_data=COALESCE($8,image_data),
+    status='pending_review',review_comments='',updated_at=now(),reviewed_at=NULL,signed_by=NULL,signed_by_name=NULL WHERE id=$9`,
+    [patientName,labNumber,report?String(report.name).slice(0,250):null,report?String(report.type||'application/octet-stream').toLowerCase():null,report?decode(report):null,
+     first?String(first.name).slice(0,250):null,first?String(first.type||'application/octet-stream').toLowerCase():null,first?decode(first):null,c.id]);
+  if(images){await pool.query('DELETE FROM ultrasound_case_attachments WHERE case_id=$1',[c.id]);for(const f of images.slice(1))await pool.query('INSERT INTO ultrasound_case_attachments(id,case_id,file_name,file_type,file_data) VALUES($1,$2,$3,$4,$5)', ['usa_'+crypto.randomUUID(),c.id,String(f.name).slice(0,250),String(f.type||'application/octet-stream').toLowerCase(),decode(f)]);}
+  res.json({ok:true,status:'pending_review'});
+});
+
+// Withdrawal is a soft status change; the case and attachments remain available in the audit/archive trail.
+app.post('/api/ultrasound/cases/:id/withdraw', auth, ultrasoundAccess, async (req,res) => {
+  if(req.ultrasoundRole!=='sonographer') return res.status(403).json({error:'Only the Sonographer can withdraw their case.'});
+  await ensureUltrasoundTables();
+  const r=await pool.query(`UPDATE ultrasound_cases SET status='withdrawn',updated_at=now() WHERE id=$1 AND sonographer_username=$2 AND status IN ('pending_review','changes_requested') RETURNING id`,[req.params.id,req.user.username]);
+  if(!r.rowCount) return res.status(409).json({error:'Only your pending or changes-requested cases can be withdrawn. Approved cases cannot be deleted.'});
+  res.json({ok:true,status:'withdrawn'});
 });
 
 // SPA fallback — serve the app for any non-API GET route
