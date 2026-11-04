@@ -1,3 +1,13 @@
+## V88 — HR Structuring, Employee IDs & Former Employees
+
+- Added branch/location selection to employee creation and employee profile editing.
+- Added initial monthly salary and salary effective month to the Add Employee workflow; saved values are integrated into Employee Profile & Salary Setup.
+- Added permanent Employee ID generation for employees with a valid Date of Joining, sorted chronologically with a preview and confirmation.
+- Existing Employee IDs are preserved when Date of Joining is later corrected; new employees receive the next available ID after the ID sequence has started.
+- Added a Former Employee tab. An employee remains included in the salary month containing their inactive date and is excluded from subsequent months; historical salary records are retained.
+- Reviewer accounts can be assigned a branch and the account-management UI includes account location selection and removal actions.
+- No database reset or transactional-data deletion is introduced.
+
 ## V87 — Branch-Scoped Reviewer Reports
 
 - Reviewer accounts retain their assigned branch during server startup.
