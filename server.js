@@ -139,7 +139,7 @@ app.get('/api/config', auth, (req, res) => {
     id: u.id, name: u.name, username: u.username, role: u.role, locationId: u.locationId || null,
     active: u.active !== false, statusHistory: Array.isArray(u.statusHistory) ? u.statusHistory : []
   }));
-  if(req.user.role==='reviewer'){ const id=req.user.locationId; return res.json({locations:locations.filter(l=>l.id===id),categories:DB.categories||[],employees:[],vendors:[],doctors:[],customLists:[],specialCards:[],staff:[],employeeProfiles:[],employeeDetails:{},fixedExpenseCategories:[]}); }
+  if(req.user.role==='reviewer'){ const id=req.user.locationId; return res.json({locations:locations.filter(l=>l.id===id),categories:(DB.categories||[]).filter(c=>!c.locationId||c.locationId===id),employees:[],vendors:[],doctors:[],customLists:[],specialCards:[],staff:[],employeeProfiles:[],employeeDetails:{},fixedExpenseCategories:[]}); }
   res.json({ locations, categories: DB.categories || [], employees: DB.employees || [], vendors: DB.vendors || [], doctors: DB.doctors || [], customLists: DB.customLists || [], specialCards: DB.specialCards || [], staff, employeeProfiles: DB.employeeProfiles || [], employeeDetails: DB.employeeDetails || {}, fixedExpenseCategories: DB.fixedExpenseCategories || [] });
 });
 app.put('/api/config/categories', auth, adminOnly, async (req, res) => {
@@ -1859,7 +1859,8 @@ async function boot() {
       const x = {...u};
       if (x.id === 'admin' || x.username === 'admin') x.role='admin';
       if (x.role !== 'admin' && x.role !== 'reviewer' && !x.locationId) x.locationId='nmdc-main';
-      if (x.role === 'reviewer') x.locationId=null;
+      // Preserve the branch assigned to Reviewer accounts; clearing this on boot
+      // breaks branch-scoped reporting and silently removes the account assignment.
       return x;
     });
     DB.entries = DB.entries || {};

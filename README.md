@@ -1,3 +1,13 @@
+## V87 — Branch-Scoped Reviewer Reports
+
+- Reviewer accounts retain their assigned branch during server startup.
+- Reviewer login opens the Reports screen directly and loads the assigned branch report without requesting staff-only daily-entry or Ultrasound access endpoints.
+- Reviewer navigation is limited to Reports. Report filters, CSV export, and print/PDF output are restricted to the assigned branch at the API boundary.
+- Data Safety & Demo and Individual Entry Management controls are Admin-only; backup and demo APIs remain Admin-only.
+- Reviewer configuration returns only the assigned branch and its applicable categories.
+- Login failures now clear the loading state and return the user to the login screen with an error message.
+- No database reset or transactional-data deletion is introduced.
+
 ## V86 — Ultrasound Upload, Camera, Correction & Withdrawal Update
 - Ultrasound reports now accept common document and image formats instead of PDF-only uploads; ultrasound images accept common image formats.
 - Sonographers can attach multiple ultrasound images, and mobile users can use the camera capture control alongside file selection.
