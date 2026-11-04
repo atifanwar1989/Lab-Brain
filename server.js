@@ -440,8 +440,20 @@ app.put('/api/config/employee/:name/status', auth, adminOnly, async (req,res)=>{
   const name=String(req.params.name||'').trim(), active=req.body.active!==false;
   if(!(DB.employees||[]).some(x=>x===name)) return res.status(404).json({error:'Employee not found.'});
   DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
-  DB.employeeDetails[name]={...(DB.employeeDetails[name]||{employee:name}),employee:name,active,inactiveDate:active?null:(DB.employeeDetails[name]?.inactiveDate||todayPakistan())};
-  const p=(DB.employeeProfiles||[]).find(x=>x.employee===name); if(p){p.active=active;p.inactiveDate=active?null:(p.inactiveDate||DB.employeeDetails[name].inactiveDate);}
+  const oldDetail=DB.employeeDetails[name]||{};
+  const p=(DB.employeeProfiles||[]).find(x=>x.employee===name);
+  if(active){
+    DB.employeeDetails[name]={...oldDetail,employee:name,active:true,inactiveDate:null};
+    if(p){p.active=true;p.inactiveDate=null;}
+  } else {
+    const requestedDate=String(req.body.inactiveDate||'').slice(0,10);
+    const validDate=/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)&&!Number.isNaN(Date.parse(requestedDate+'T00:00:00'));
+    if(!validDate) return res.status(400).json({error:'A valid Disable Date (YYYY-MM-DD) is required.'});
+    // Preserve a previously recorded disable date for already-inactive employees.
+    const inactiveDate=oldDetail.active===false?(oldDetail.inactiveDate||p?.inactiveDate||requestedDate):requestedDate;
+    DB.employeeDetails[name]={...oldDetail,employee:name,active:false,inactiveDate};
+    if(p){p.active=false;p.inactiveDate=inactiveDate;}
+  }
   try{await persist();res.json({ok:true,employeeDetails:DB.employeeDetails,employeeProfiles:DB.employeeProfiles||[]});}catch(e){console.error(e);res.status(500).json({error:'Could not update employee status.'});}
 });
 app.delete('/api/config/employee/:name', auth, adminOnly, async (req,res)=>{

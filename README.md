@@ -1,3 +1,11 @@
+## V89 — Employee Disable Date & Former Employee Workflow
+
+- Fixed Former Employee tab rendering so it displays its own former-employee list instead of falling back to Monthly Salary Processing.
+- Disabling an employee now requires a Disable Date in `YYYY-MM-DD` format.
+- The selected disable date is saved in employee details and salary profile; the employee remains eligible for the disable-date month and is excluded from salary processing from the following month.
+- Existing inactive employees retain their previously recorded Disable Date; reactivation clears the inactive date.
+- Existing salary and financial history is preserved; no database reset or record deletion is performed.
+
 ## V88 — HR Structuring, Employee IDs & Former Employees
 
 - Added branch/location selection to employee creation and employee profile editing.
