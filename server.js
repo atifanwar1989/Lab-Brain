@@ -1240,6 +1240,23 @@ app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
   }catch(e){console.error(e);res.status(500).send('Could not export report.');}
 });
 
+// Staff can retrieve only their own saved LIS evidence for the daily print summary.
+app.get('/api/lis-reconciliation/current', auth, (req,res)=>{
+  const date=String(req.query.date||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return res.status(400).json({error:'Valid report date is required.'});
+  let username=req.user.username,locationId=userLocation(req.user);
+  if(isManagementRole(req.user.role)){
+    username=String(req.query.username||'');locationId=String(req.query.locationId||'');
+    const target=(DB.users||[]).find(u=>u.username===username&&u.role==='staff'&&u.locationId===locationId);
+    if(!target)return res.status(400).json({error:'Select a valid staff member and branch.'});
+    if(req.user.role==='reviewer'&&req.user.locationId!==locationId)return res.status(403).json({error:'You can only view evidence for your assigned branch.'});
+  }
+  const record=(DB.lisReconciliations||[]).filter(r=>r.date===date&&r.username===username&&r.locationId===locationId).sort((a,b)=>Number(b.uploadedAt)-Number(a.uploadedAt))[0]||null;
+  if(!record)return res.json({record:null});
+  const {rawText,...safeRecord}=record;
+  res.json({record:safeRecord});
+});
+
 // LIS revenue reconciliation: keep source screenshots and verification history separately
 // from the existing pattern-based AI activity alerts.
 app.get('/api/lis-reconciliations', auth, managementOnly, (req,res)=>{
@@ -1278,7 +1295,7 @@ app.post('/api/lis-reconciliations', auth, async (req,res)=>{
   if(keys.some(k=>!Number.isFinite(Number(x[k]))||Number(x[k])<0))return res.status(400).json({error:'Please verify all four extracted LIS values before saving.'});
   if(!/^data:image\/(png|jpeg|webp);base64,/.test(String(b.imageData||''))||String(b.imageData).length>9000000)return res.status(400).json({error:'Paste or upload a valid screenshot under 6 MB.'});
   DB.lisReconciliations=Array.isArray(DB.lisReconciliations)?DB.lisReconciliations:[];
-  const record={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,locationId,username,staffName:(DB.users||[]).find(u=>u.username===username)?.name||username,extracted:{Laboratory:Math.round(Number(x.Laboratory)),'X-ray':Math.round(Number(x['X-ray'])),Ultrasound:Math.round(Number(x.Ultrasound)),patientCount:Math.round(Number(x.patientCount))},rawText:String(b.rawText||'').slice(0,12000),imageData:b.imageData,uploadedAt:Date.now(),uploadedBy:req.user.username,uploadedByName:req.user.name};
+  const record={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,locationId,username,staffName:(DB.users||[]).find(u=>u.username===username)?.name||username,extracted:{Laboratory:Math.round(Number(x.Laboratory)),'X-ray':Math.round(Number(x['X-ray'])),Ultrasound:Math.round(Number(x.Ultrasound)),patientCount:Math.round(Number(x.patientCount))},rawText:String(b.rawText||'').slice(0,12000),imageData:b.imageData,printImageData:(/^data:image\/(png|jpeg|webp);base64,/.test(String(b.printImageData||''))&&String(b.printImageData).length<=3000000)?b.printImageData:b.imageData,uploadedAt:Date.now(),uploadedBy:req.user.username,uploadedByName:req.user.name};
   DB.lisReconciliations.push(record);
   // Keep a reasonable audit trail without allowing unlimited screenshot growth.
   const same=DB.lisReconciliations.filter(r=>r.date===date&&r.username===username&&r.locationId===locationId);

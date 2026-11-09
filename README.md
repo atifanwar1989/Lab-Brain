@@ -1,3 +1,14 @@
+# V92 — LIS Evidence in Daily Print Summary
+
+- Added the saved LIS screenshot evidence to the Daily Cash Management Print Summary, immediately below the daily entries. The print view uses the report portion from the Net Cash row through the Patient Type Wise Summary / No of Patient row when those anchors are recognized; if the crop cannot be identified, the original screenshot is retained as a safe fallback.
+- The cropped evidence is generated from OCR word positions, so staff do not need to use a fixed screenshot dimension or manually crop the LIS report. The original full screenshot remains preserved for verification history.
+- Added a permission-scoped endpoint so staff can retrieve only their own saved LIS evidence for printing; management users must select a valid staff member and branch.
+- Reworked the printed Cash Handover area into a compact summary: Expected Cash always appears, while Cash Short, Cash Excess, and remarks appear only when entered.
+- Tightened print spacing and evidence sizing to help the summary fit on one page. Actual pagination can still depend on the number of daily entries and the printer's paper settings.
+- Existing entries, patient counts, handovers, and historical data are not modified. No database reset is performed.
+
+---
+
 # V91 — LIS Revenue Reconciliation
 
 - Added a dedicated LIS screenshot paste/upload area to Daily Cash Management. Staff can capture the LIS report with **Win + Shift + S**, click the paste area, and press **Ctrl + V**; image-file upload is also available.
