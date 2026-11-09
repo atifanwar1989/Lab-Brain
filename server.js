@@ -1240,6 +1240,51 @@ app.get('/api/report.csv', auth, managementOnly, async (req,res)=>{
   }catch(e){console.error(e);res.status(500).send('Could not export report.');}
 });
 
+// LIS revenue reconciliation: keep source screenshots and verification history separately
+// from the existing pattern-based AI activity alerts.
+app.get('/api/lis-reconciliations', auth, managementOnly, (req,res)=>{
+  const from=String(req.query.from||'').slice(0,10),to=String(req.query.to||'').slice(0,10),locationId=String(req.query.locationId||'all');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)||from>to)return res.status(400).json({error:'Valid From and To dates are required.'});
+  if(req.user.role==='reviewer'&&locationId!=='all'&&locationId!==req.user.locationId)return res.status(403).json({error:'You can only view LIS verification for your assigned branch.'});
+  const effectiveLocationId=req.user.role==='reviewer'?req.user.locationId:locationId;
+  const rows=[];
+  const latest=new Map();
+  for(const rec of (DB.lisReconciliations||[])){const key=rec.date+'::'+rec.locationId+'::'+rec.username,old=latest.get(key);if(!old||Number(rec.uploadedAt)>Number(old.uploadedAt))latest.set(key,rec);}
+  for(const rec of latest.values()){
+    if(rec.date<from||rec.date>to||(effectiveLocationId!=='all'&&rec.locationId!==effectiveLocationId))continue;
+    const entries=(DB.entries?.[rec.date.slice(0,7)]||[]).filter(e=>e.date===rec.date&&e.username===rec.username&&e.locationId===rec.locationId);
+    const actual={Laboratory:0,'X-ray':0,Ultrasound:0};
+    for(const e of entries){const cat=(DB.categories||[]).find(c=>c.id===e.catId),kind=aiCategoryKind(cat);if(kind)actual[kind]+=Number(e.amount||0);}
+    const pc=DB.patientCounts?.[rec.date+'::'+rec.username];
+    const expected=rec.extracted||{};
+    const differences=[];
+    for(const k of ['Laboratory','X-ray','Ultrasound'])if(Number(expected[k]||0)!==Math.round(actual[k]))differences.push({field:k,lis:Number(expected[k]||0),entered:Math.round(actual[k]),difference:Math.round(actual[k])-Number(expected[k]||0)});
+    if(pc==null||Number(expected.patientCount||0)!==Number(pc))differences.push({field:'Patient Count',lis:Number(expected.patientCount||0),entered:pc==null?null:Number(pc),difference:pc==null?null:Number(pc)-Number(expected.patientCount||0)});
+    rows.push({...rec,rawText:undefined,actual,enteredPatientCount:pc==null?null:Number(pc),differences,status:differences.length?'mismatch':'match'});
+  }
+  rows.sort((a,b)=>b.uploadedAt-a.uploadedAt);
+  res.json({records:rows});
+});
+app.post('/api/lis-reconciliations', auth, async (req,res)=>{
+  const b=req.body||{},date=String(b.date||'').slice(0,10);let locationId,username;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return res.status(400).json({error:'Valid report date is required.'});
+  if(isManagementRole(req.user.role)){
+    locationId=String(b.locationId||'');username=String(b.username||'');
+    const target=(DB.users||[]).find(u=>u.username===username&&u.role==='staff'&&u.locationId===locationId);
+    if(!target)return res.status(400).json({error:'Select a valid staff member and branch.'});
+    if(req.user.role==='reviewer'&&req.user.locationId!==locationId)return res.status(403).json({error:'You can only verify your assigned branch.'});
+  }else{locationId=userLocation(req.user);username=req.user.username;if(!locationId)return res.status(400).json({error:'Your account has no branch assigned.'});}
+  const x=b.extracted||{},keys=['Laboratory','X-ray','Ultrasound','patientCount'];
+  if(keys.some(k=>!Number.isFinite(Number(x[k]))||Number(x[k])<0))return res.status(400).json({error:'Please verify all four extracted LIS values before saving.'});
+  if(!/^data:image\/(png|jpeg|webp);base64,/.test(String(b.imageData||''))||String(b.imageData).length>9000000)return res.status(400).json({error:'Paste or upload a valid screenshot under 6 MB.'});
+  DB.lisReconciliations=Array.isArray(DB.lisReconciliations)?DB.lisReconciliations:[];
+  const record={id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),date,locationId,username,staffName:(DB.users||[]).find(u=>u.username===username)?.name||username,extracted:{Laboratory:Math.round(Number(x.Laboratory)),'X-ray':Math.round(Number(x['X-ray'])),Ultrasound:Math.round(Number(x.Ultrasound)),patientCount:Math.round(Number(x.patientCount))},rawText:String(b.rawText||'').slice(0,12000),imageData:b.imageData,uploadedAt:Date.now(),uploadedBy:req.user.username,uploadedByName:req.user.name};
+  DB.lisReconciliations.push(record);
+  // Keep a reasonable audit trail without allowing unlimited screenshot growth.
+  const same=DB.lisReconciliations.filter(r=>r.date===date&&r.username===username&&r.locationId===locationId);
+  if(same.length>10){const remove=new Set(same.sort((a,b)=>a.uploadedAt-b.uploadedAt).slice(0,same.length-10).map(r=>r.id));DB.lisReconciliations=DB.lisReconciliations.filter(r=>!remove.has(r.id));}
+  try{await persist();res.json({ok:true,id:record.id});}catch(e){console.error('LIS reconciliation save failed:',e);res.status(500).json({error:'Could not save LIS verification evidence.'});}
+});
 app.get('/api/ai-activity-check', auth, managementOnly, (req,res)=>{ const from=String(req.query.from||'').slice(0,10), to=String(req.query.to||'').slice(0,10), locationId=String(req.query.locationId||'all'); if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)||from>to)return res.status(400).json({error:'Valid From and To dates are required.'}); if((new Date(to+'T12:00:00Z')-new Date(from+'T12:00:00Z'))/86400000>366)return res.status(400).json({error:'Please check a maximum of 12 months at a time.'}); if(locationId!=='all'&&!((DB.locations||[]).some(l=>l.id===locationId)))return res.status(400).json({error:'Invalid branch.'}); try{res.json(aiActivityCheck({from,to,locationId}));}catch(e){console.error('AI activity check failed:',e);res.status(500).json({error:'AI Activity Check could not be completed.'});} });
 app.post('/api/ai-activity-review', auth, managementOnly, async (req,res)=>{ const key=String(req.body?.alertKey||'').trim(); if(!key)return res.status(400).json({error:'Alert key is required.'}); DB.aiReviewedAlerts=DB.aiReviewedAlerts||{}; DB.aiReviewedAlerts[key]={reviewedBy:req.user.username,reviewedByName:req.user.name,reviewedAt:Date.now()}; try{await persist();res.json({ok:true,alertKey:key});}catch(e){console.error('AI alert review save failed:',e);res.status(500).json({error:'Could not save AI alert review.'});} });
 

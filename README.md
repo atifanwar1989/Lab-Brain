@@ -1,3 +1,16 @@
+# V91 — LIS Revenue Reconciliation
+
+- Added a dedicated LIS screenshot paste/upload area to Daily Cash Management. Staff can capture the LIS report with **Win + Shift + S**, click the paste area, and press **Ctrl + V**; image-file upload is also available.
+- Added browser OCR (Tesseract.js) to read the Net Cash department values and Total Patient Count. Extracted values remain editable and must be checked by the employee before saving. If OCR is unavailable or unclear, the employee can enter the four LIS values manually.
+- Added persistent LIS reconciliation evidence and history without modifying existing daily entries, patient counts, handovers, or financial records.
+- Added separate tabs in Reports → AI Activity Check: **All Activity**, **LIS Mismatch Verification**, and **Missing Entries**. The LIS tab displays only actual differences between the saved LIS values and Lab-Brain entries; days without an uploaded LIS report are not treated as mismatches.
+- Added source screenshot viewing and a link to review the relevant daily record. Latest LIS report per staff/branch/date is used for the mismatch list; earlier uploads remain in the saved evidence history.
+- Existing pattern-based AI Activity Check remains separate and unchanged in its underlying detection logic. No database reset or migration that deletes existing data is performed.
+
+**Note:** First-time OCR loading requires an internet connection to fetch the OCR library and English language data. OCR results are not auto-approved; staff must verify the four extracted values before saving.
+
+---
+
 ## V90 — Date of Joining Visibility & Employee ID Validation
 
 - Added an editable Date of Joining (DOJ) column to Employee Profile & Salary Setup.
