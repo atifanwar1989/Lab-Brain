@@ -1,3 +1,13 @@
+# V93 — CEO Dashboard Interactivity & Trend Readability
+
+- Revenue & Patient Trend now uses a blue Revenue line and a yellow Patient Count line, each with separate scale and exact-value hover tooltips on every monthly point.
+- Expense trend sparklines now show abbreviated month labels (Jan, Feb, Mar, etc.) and hover tooltips with the exact monthly amount.
+- Branch Revenue Trend uses a normalized per-branch visual scale so smaller branches' movement remains visible; numeric Y-axis values are removed, and each point tooltip shows the actual branch, month, and revenue amount.
+- Dashboard KPI cards, charts, expense cards, and insight cards support double-click focus/zoom without navigating away; double-click again or press Escape to restore the original layout.
+- Existing Lab-Brain data sources, financial calculations, Admin/Reviewer access restrictions, and database records are preserved. No database migration or reset is included.
+
+---
+
 # V92 — CEO Executive Dashboard Visual Refinement
 
 - Refined the CEO Dashboard to more closely match the approved reference design while retaining the existing Lab-Brain navy/blue and white theme.
