@@ -267,7 +267,7 @@ function advanceSalaryFor(month, employee, locationId) {
 function salaryRecordForMonth(month, profile, prior={}) {
   return calculateSalary(month, profile, {
     absentDays:prior.absentDays, lateDays:prior.lateDays,
-    manualDeduction:prior.manualDeduction, loanDeduction:prior.loanDeduction, specialAllowance:prior.specialAllowance
+    manualDeduction:prior.manualDeduction, loanDeduction:prior.loanDeduction
   });
 }
 function salaryForMonth(month, profile) {
@@ -288,13 +288,12 @@ function calculateSalary(month, profile, input={}) {
   const annualLeave=Math.max(0,Number(input.annualLeave||0));
   const lateDays=Math.max(0,Number(input.lateDays||0));
   const manualDeduction=Math.max(0,Number(input.manualDeduction||0));
-  const specialAllowance=Math.max(0,Number(input.specialAllowance||0));
   const advance=Number(input.advanceSalary ?? advanceSalaryFor(month, profile.employee, profile.locationId));
   const loan=loanForMonth(profile.employee,month);
   const requestedLoanDeduction=Math.max(0,Number(input.loanDeduction ?? loan.installment));
   const loanDeduction=Math.min(requestedLoanDeduction,Math.max(0,loan.remaining));
-  const net=Math.max(0,basic+specialAllowance-advance-manualDeduction-loanDeduction);
-  return {basicSalary:basic,specialAllowance,advanceSalary:advance,absentDays,sickLeave,casualLeave,annualLeave,lateDays,absentDeduction:0,manualDeduction,loanDeduction,loanRemainingAfter:Math.max(0,loan.remaining-loanDeduction),netSalary:net};
+  const net=Math.max(0,basic-advance-manualDeduction-loanDeduction);
+  return {basicSalary:basic,advanceSalary:advance,absentDays,sickLeave,casualLeave,annualLeave,lateDays,absentDeduction:0,manualDeduction,loanDeduction,loanRemainingAfter:Math.max(0,loan.remaining-loanDeduction),netSalary:net};
 }
 app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   ensureFinanceConfig();
@@ -319,7 +318,8 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   const revMap={};
   const specialRevenueMap={muslimKhatri:{},roopRajput:{}};
   const normalizedRevenueName=(v)=>String(v||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'');
-  const isDiagnosticRevenueName=(v)=>['laboratory','lab','laboraotory','laboraotry','xray','xraytest','xrayservice','ultrasound','ultrasoundtest','ultrasoundservice'].includes(normalizedRevenueName(v));
+  const canonicalRevenueName=(v)=>{const n=normalizedRevenueName(v);if(['laboratory','lab','laboraotory','laboraotry','laboratoty','laboratry','laboratoy','laboritory','labratory','labortory','laboratroy','labaratory'].includes(n))return 'laboratory';if(['xray','xraytest','xrayservice'].includes(n))return 'xray';if(['ultrasound','ultrasoundtest','ultrasoundservice'].includes(n))return 'ultrasound';return n;};
+  const isDiagnosticRevenueName=(v)=>['laboratory','xray','ultrasound'].includes(canonicalRevenueName(v));
   for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
     if(String(e.date||'').slice(0,7)!==month || String(e.locationId||'')==='') continue;
     if(locationId!=='all' && e.locationId!==locationId) continue;
@@ -329,9 +329,10 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     if(name==='muslimkhatri') { const k=e.locationId; specialRevenueMap.muslimKhatri[k]=(specialRevenueMap.muslimKhatri[k]||0)+amount; continue; }
     if(name==='rooprajput') { const k=e.locationId; specialRevenueMap.roopRajput[k]=(specialRevenueMap.roopRajput[k]||0)+amount; continue; }
     let dep=null;
-    if(isDiagnosticRevenueName(name)&&['laboratory','lab','laboraotory','laboraotry'].includes(name)) dep='Laboratory';
-    else if(['xray','xraytest','xrayservice'].includes(name)) dep='X-Ray';
-    else if(['ultrasound','ultrasoundtest','ultrasoundservice'].includes(name)) dep='Ultrasound';
+    const canonical=canonicalRevenueName(name);
+    if(canonical==='laboratory') dep='Laboratory';
+    else if(canonical==='xray') dep='X-Ray';
+    else if(canonical==='ultrasound') dep='Ultrasound';
     if(!dep) continue;
     const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+amount;
   }
@@ -1255,7 +1256,7 @@ function aiNormalizeCategoryName(name){
 function aiCategoryKind(cat){
   const n=aiNormalizeCategoryName(cat?.name);
   if(cat?.type!=='income') return null;
-  if(n==='laboratory'||n==='lab'||n==='laboraotory'||n==='laboraotry') return 'Laboratory';
+  if(['laboratory','lab','laboraotory','laboraotry','laboratoty','laboratry','laboratoy','laboritory','labratory','labortory','laboratroy','labaratory'].includes(n)) return 'Laboratory';
   if(n==='xray'||n==='xraytest'||n==='xrayservice') return 'X-ray';
   if(n==='ultrasound'||n==='ultrasoundtest'||n==='ultrasoundservice') return 'Ultrasound';
   return null;

@@ -1,12 +1,7 @@
-
-## V90 Update — Special Allowance in Monthly Payroll
-
-- Added a per-employee Special Allowance input to Monthly Salary Processing.
-- Special Allowance is saved with the selected employee and payroll month.
-- Net Salary now includes Basic Salary + Special Allowance, less advances, deductions and loan deduction.
-- Salary Slip shows Special Allowance as a separate earning and includes it in Total Earnings and Net Salary.
-- Monthly Salary PDF includes the allowance column.
-- Existing salary records without this field continue to default to zero; existing records are preserved.
+## V90 — Laboratory Department Name Normalization
+- Standardized legacy Laboratory spelling variants to one canonical `Laboratory` department for revenue categorization and department-wise reporting.
+- Revenue drill-down groups spelling variants into one `Laboratory` button and one category total; selecting it includes entries saved under any recognized legacy spelling.
+- Existing category names and financial entries are not rewritten or deleted.
 
 ## V90 — Date of Joining Visibility & Employee ID Validation
 
