@@ -267,7 +267,7 @@ function advanceSalaryFor(month, employee, locationId) {
 function salaryRecordForMonth(month, profile, prior={}) {
   return calculateSalary(month, profile, {
     absentDays:prior.absentDays, lateDays:prior.lateDays,
-    manualDeduction:prior.manualDeduction, loanDeduction:prior.loanDeduction
+    manualDeduction:prior.manualDeduction, loanDeduction:prior.loanDeduction, specialAllowance:prior.specialAllowance
   });
 }
 function salaryForMonth(month, profile) {
@@ -288,12 +288,13 @@ function calculateSalary(month, profile, input={}) {
   const annualLeave=Math.max(0,Number(input.annualLeave||0));
   const lateDays=Math.max(0,Number(input.lateDays||0));
   const manualDeduction=Math.max(0,Number(input.manualDeduction||0));
+  const specialAllowance=Math.max(0,Number(input.specialAllowance||0));
   const advance=Number(input.advanceSalary ?? advanceSalaryFor(month, profile.employee, profile.locationId));
   const loan=loanForMonth(profile.employee,month);
   const requestedLoanDeduction=Math.max(0,Number(input.loanDeduction ?? loan.installment));
   const loanDeduction=Math.min(requestedLoanDeduction,Math.max(0,loan.remaining));
-  const net=Math.max(0,basic-advance-manualDeduction-loanDeduction);
-  return {basicSalary:basic,advanceSalary:advance,absentDays,sickLeave,casualLeave,annualLeave,lateDays,absentDeduction:0,manualDeduction,loanDeduction,loanRemainingAfter:Math.max(0,loan.remaining-loanDeduction),netSalary:net};
+  const net=Math.max(0,basic+specialAllowance-advance-manualDeduction-loanDeduction);
+  return {basicSalary:basic,specialAllowance,advanceSalary:advance,absentDays,sickLeave,casualLeave,annualLeave,lateDays,absentDeduction:0,manualDeduction,loanDeduction,loanRemainingAfter:Math.max(0,loan.remaining-loanDeduction),netSalary:net};
 }
 app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   ensureFinanceConfig();

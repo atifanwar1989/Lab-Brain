@@ -1,3 +1,13 @@
+
+## V90 Update — Special Allowance in Monthly Payroll
+
+- Added a per-employee Special Allowance input to Monthly Salary Processing.
+- Special Allowance is saved with the selected employee and payroll month.
+- Net Salary now includes Basic Salary + Special Allowance, less advances, deductions and loan deduction.
+- Salary Slip shows Special Allowance as a separate earning and includes it in Total Earnings and Net Salary.
+- Monthly Salary PDF includes the allowance column.
+- Existing salary records without this field continue to default to zero; existing records are preserved.
+
 ## V90 — Date of Joining Visibility & Employee ID Validation
 
 - Added an editable Date of Joining (DOJ) column to Employee Profile & Salary Setup.
