@@ -298,7 +298,7 @@ function calculateSalary(month, profile, input={}) {
 app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   ensureFinanceConfig();
   const month=String(req.query.month||'').slice(0,7);
-  const locationId=String(req.query.locationId||'all');
+  const locationId=req.user.role==='reviewer'?(userLocation(req.user)||'all'):String(req.query.locationId||'all');
   const masterSet=new Set(DB.employees||[]);
   const seenEmployees=new Set();
   const employees=(DB.employeeProfiles||[]).filter(p=>{
@@ -318,8 +318,7 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
   const revMap={};
   const specialRevenueMap={muslimKhatri:{},roopRajput:{}};
   const normalizedRevenueName=(v)=>String(v||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'');
-  const canonicalRevenueName=(v)=>{const n=normalizedRevenueName(v);if(['laboratory','lab','laboraotory','laboraotry','laboratoty','laboratry','laboratoy','laboritory','labratory','labortory','laboratroy','labaratory'].includes(n))return 'laboratory';if(['xray','xraytest','xrayservice'].includes(n))return 'xray';if(['ultrasound','ultrasoundtest','ultrasoundservice'].includes(n))return 'ultrasound';return n;};
-  const isDiagnosticRevenueName=(v)=>['laboratory','xray','ultrasound'].includes(canonicalRevenueName(v));
+  const isDiagnosticRevenueName=(v)=>['laboratory','lab','laboraotory','laboraotry','xray','xraytest','xrayservice','ultrasound','ultrasoundtest','ultrasoundservice'].includes(normalizedRevenueName(v));
   for(const mk of Object.keys(DB.entries||{})) for(const e of (DB.entries[mk]||[])) {
     if(String(e.date||'').slice(0,7)!==month || String(e.locationId||'')==='') continue;
     if(locationId!=='all' && e.locationId!==locationId) continue;
@@ -329,10 +328,9 @@ app.get('/api/finance-management', auth, managementOnly, (req,res) => {
     if(name==='muslimkhatri') { const k=e.locationId; specialRevenueMap.muslimKhatri[k]=(specialRevenueMap.muslimKhatri[k]||0)+amount; continue; }
     if(name==='rooprajput') { const k=e.locationId; specialRevenueMap.roopRajput[k]=(specialRevenueMap.roopRajput[k]||0)+amount; continue; }
     let dep=null;
-    const canonical=canonicalRevenueName(name);
-    if(canonical==='laboratory') dep='Laboratory';
-    else if(canonical==='xray') dep='X-Ray';
-    else if(canonical==='ultrasound') dep='Ultrasound';
+    if(isDiagnosticRevenueName(name)&&['laboratory','lab','laboraotory','laboraotry'].includes(name)) dep='Laboratory';
+    else if(['xray','xraytest','xrayservice'].includes(name)) dep='X-Ray';
+    else if(['ultrasound','ultrasoundtest','ultrasoundservice'].includes(name)) dep='Ultrasound';
     if(!dep) continue;
     const k=e.locationId+'::'+dep; revMap[k]=(revMap[k]||0)+amount;
   }
@@ -1217,6 +1215,7 @@ app.post('/api/demo-data/remove', auth, adminOnly, async (req,res) => {
   } catch(e) { console.error(e); res.status(500).json({error:'Could not remove demo data.'}); }
 });
 function requestedLocationIds(req){
+  if(req.user?.role==='reviewer'){const assigned=userLocation(req.user);return assigned?new Set([assigned]):new Set(['__no_assigned_location__']);}
   const raw=String(req.query.locationIds||'').split(',').map(x=>x.trim()).filter(Boolean);
   if(raw.length) return new Set(raw);
   const single=req.query.locationId&&req.query.locationId!=='all'?String(req.query.locationId):null;
@@ -1256,7 +1255,7 @@ function aiNormalizeCategoryName(name){
 function aiCategoryKind(cat){
   const n=aiNormalizeCategoryName(cat?.name);
   if(cat?.type!=='income') return null;
-  if(['laboratory','lab','laboraotory','laboraotry','laboratoty','laboratry','laboratoy','laboritory','labratory','labortory','laboratroy','labaratory'].includes(n)) return 'Laboratory';
+  if(n==='laboratory'||n==='lab'||n==='laboraotory'||n==='laboraotry') return 'Laboratory';
   if(n==='xray'||n==='xraytest'||n==='xrayservice') return 'X-ray';
   if(n==='ultrasound'||n==='ultrasoundtest'||n==='ultrasoundservice') return 'Ultrasound';
   return null;

@@ -1,7 +1,11 @@
-## V90 — Laboratory Department Name Normalization
-- Standardized legacy Laboratory spelling variants to one canonical `Laboratory` department for revenue categorization and department-wise reporting.
-- Revenue drill-down groups spelling variants into one `Laboratory` button and one category total; selecting it includes entries saved under any recognized legacy spelling.
-- Existing category names and financial entries are not rewritten or deleted.
+# V91 — CEO Executive Dashboard
+
+- Added a compact CEO Executive Dashboard for Admin and Reviewer roles.
+- Uses existing management-summary and finance-management data; no new financial tables or data migrations.
+- Includes revenue and patient trend, branch performance, department revenue, expense trend cards, expense mix, profit and margin KPIs, and rule-based executive insights.
+- Admin can select all branches or an individual branch. Reviewer is restricted to their assigned location in the dashboard data requests.
+- Existing reports and financial screens remain available; no records are rewritten or deleted.
+- Dashboard figures are derived from current Lab-Brain records; insights are descriptive rules, not autonomous audit conclusions.
 
 ## V90 — Date of Joining Visibility & Employee ID Validation
 
