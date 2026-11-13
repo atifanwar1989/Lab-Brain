@@ -1,3 +1,16 @@
+# V92 — CEO Executive Dashboard Visual Refinement
+
+- Refined the CEO Dashboard to more closely match the approved reference design while retaining the existing Lab-Brain navy/blue and white theme.
+- Added circular KPI icons and clearer positive/negative comparison styling.
+- Replaced the normalized patient overlay with a dual-axis revenue and patient trend, using separate readable scales.
+- Expanded branch performance rows to show revenue, patient count, and revenue growth versus the previous month.
+- Replaced department summary tiles with a department revenue donut chart and legend.
+- Added coloured icons to expense trend cards and changed Expense Mix to a donut chart with percentage legend.
+- Improved spacing, typography, chart hierarchy, responsive layout, and print styling.
+- Existing data sources, Admin all-branch/branch selector, Reviewer assigned-branch restriction, and underlying financial calculations remain in place. No database reset or data rewrite is included.
+
+---
+
 # V91 — CEO Executive Dashboard
 
 - Added a compact CEO Executive Dashboard for Admin and Reviewer roles.
