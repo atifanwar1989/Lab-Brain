@@ -1,3 +1,11 @@
+## V94 — CEO Combo Chart & Special Allowance Restore
+
+- CEO Revenue & Patient Trend now uses blue revenue bars with a yellow patient-count line, separate left/right scales, and hover values for each series.
+- Restored Special Allowance in Monthly Salary Processing after Advance, including live net-salary preview and automatic save payload.
+- Special Allowance is included in server-side salary calculation and retained when salary records are recalculated.
+- Monthly salary PDF includes a Special Allowance column; salary slips include it in total earnings and net salary.
+- Existing records and database are preserved; no database reset or migration is required.
+
 # V93 — CEO Dashboard Interactivity & Trend Readability
 
 - Revenue & Patient Trend now uses a blue Revenue line and a yellow Patient Count line, each with separate scale and exact-value hover tooltips on every monthly point.
