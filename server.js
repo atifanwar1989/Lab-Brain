@@ -195,22 +195,26 @@ function normalizeEmployeeMasterAndProfiles() {
   let changed = uniqueMaster.length !== master.length;
   if (changed) DB.employees = uniqueMaster;
   const profiles = Array.isArray(DB.employeeProfiles) ? DB.employeeProfiles : [];
+  DB.employeeDetails = DB.employeeDetails && typeof DB.employeeDetails === 'object' ? DB.employeeDetails : {};
   const seen = new Set(), normalized = [];
   for (const p of profiles) {
     const employee = String(p?.employee||'').trim();
     if (!employee) { changed = true; continue; }
-    if (!masterSet.has(employee)) {
-      if (p.active !== false) changed = true;
-      normalized.push({...p, employee, active:false});
-      continue;
+    const detail = DB.employeeDetails[employee] || {};
+    const inactive = p.active === false || detail.active === false || !masterSet.has(employee) || (p.active !== false && seen.has(employee));
+    const inactiveDate = inactive ? (p.inactiveDate || detail.inactiveDate || null) : null;
+    const next = {...p, employee, active:!inactive, inactiveDate};
+    if (JSON.stringify(next) !== JSON.stringify(p)) changed = true;
+    if (inactive) {
+      DB.employeeDetails[employee] = {...detail, employee, active:false, inactiveDate};
+    } else {
+      seen.add(employee);
+      if (detail.active !== true || detail.inactiveDate) {
+        DB.employeeDetails[employee] = {...detail, employee, active:true, inactiveDate:null};
+        changed = true;
+      }
     }
-    if (p.active !== false && seen.has(employee)) {
-      changed = true;
-      normalized.push({...p, employee, active:false});
-      continue;
-    }
-    if (p.active !== false) seen.add(employee);
-    normalized.push({...p, employee});
+    normalized.push(next);
   }
   if (normalized.length !== profiles.length || normalized.some((p,i)=>JSON.stringify(p)!==JSON.stringify(profiles[i]))) {
     changed = true; DB.employeeProfiles = normalized;
@@ -443,6 +447,10 @@ app.put('/api/config/employee/:name/status', auth, adminOnly, async (req,res)=>{
   DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
   const oldDetail=DB.employeeDetails[name]||{};
   const p=(DB.employeeProfiles||[]).find(x=>x.employee===name);
+  // Keep a rollback snapshot so a failed durable write cannot leave this process
+  // serving a status that was never committed to Postgres.
+  const previousDetail={...oldDetail};
+  const previousProfile=p?{...p}:null;
   if(active){
     DB.employeeDetails[name]={...oldDetail,employee:name,active:true,inactiveDate:null};
     if(p){p.active=true;p.inactiveDate=null;}
@@ -455,7 +463,12 @@ app.put('/api/config/employee/:name/status', auth, adminOnly, async (req,res)=>{
     DB.employeeDetails[name]={...oldDetail,employee:name,active:false,inactiveDate};
     if(p){p.active=false;p.inactiveDate=inactiveDate;}
   }
-  try{await persist();res.json({ok:true,employeeDetails:DB.employeeDetails,employeeProfiles:DB.employeeProfiles||[]});}catch(e){console.error(e);res.status(500).json({error:'Could not update employee status.'});}
+  try{await persist();res.json({ok:true,employeeDetails:DB.employeeDetails,employeeProfiles:DB.employeeProfiles||[]});}
+  catch(e){
+    DB.employeeDetails[name]=previousDetail;
+    if(p&&previousProfile) Object.assign(p,previousProfile);
+    console.error(e);res.status(500).json({error:'Could not update employee status. No status change was committed; please retry.'});
+  }
 });
 app.delete('/api/config/employee/:name', auth, adminOnly, async (req,res)=>{
   ensureFinanceConfig();
@@ -492,9 +505,14 @@ app.put('/api/config/employee-profiles', auth, managementOnly, async (req,res)=>
       history.sort((a,b)=>String(a.effectiveFrom||'').localeCompare(String(b.effectiveFrom||'')));
     }
     const master=DB.employeeDetails?.[employee]||{};
-    normalized.push({employee,employeeId:old.employeeId||master.employeeId||null,locationId,department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(raw.department)?raw.department:(old.department||master.department||'ALL'),designation:String(raw.designation??old.designation??master.designation??'').trim(),dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??master.dateOfJoining??'').slice(0,10),accountNumber:String(raw.accountNumber??old.accountNumber??master.accountNumber??'').trim(),salary,salaryHistory:history,sickLeaveEntitlement:Math.max(0,Number(raw.sickLeaveEntitlement??old.sickLeaveEntitlement??0)),casualLeaveEntitlement:Math.max(0,Number(raw.casualLeaveEntitlement??old.casualLeaveEntitlement??0)),annualLeaveEntitlement:Math.max(0,Number(raw.annualLeaveEntitlement??old.annualLeaveEntitlement??0)),active:raw.active!==false});
+    // Profile edits (salary, location, department, leave entitlement) must never
+    // reactivate a former employee. Status changes are allowed only through the
+    // dedicated employee status endpoint.
+    const isInactive=old.active===false||master.active===false;
+    const inactiveDate=isInactive?(old.inactiveDate||master.inactiveDate||null):null;
+    normalized.push({employee,employeeId:old.employeeId||master.employeeId||null,locationId,department:['Laboratory','X-Ray','Ultrasound','ALL'].includes(raw.department)?raw.department:(old.department||master.department||'ALL'),designation:String(raw.designation??old.designation??master.designation??'').trim(),dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??master.dateOfJoining??'').slice(0,10),accountNumber:String(raw.accountNumber??old.accountNumber??master.accountNumber??'').trim(),salary,salaryHistory:history,sickLeaveEntitlement:Math.max(0,Number(raw.sickLeaveEntitlement??old.sickLeaveEntitlement??0)),casualLeaveEntitlement:Math.max(0,Number(raw.casualLeaveEntitlement??old.casualLeaveEntitlement??0)),annualLeaveEntitlement:Math.max(0,Number(raw.annualLeaveEntitlement??old.annualLeaveEntitlement??0)),active:!isInactive,...(isInactive?{inactiveDate}:{inactiveDate:null})});
     DB.employeeDetails=DB.employeeDetails&&typeof DB.employeeDetails==='object'?DB.employeeDetails:{};
-    DB.employeeDetails[employee]={...master,employee,dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??master.dateOfJoining??'').slice(0,10),employeeId:old.employeeId||master.employeeId||null};
+    DB.employeeDetails[employee]={...master,employee,active:!isInactive,inactiveDate,dateOfJoining:String(raw.dateOfJoining??old.dateOfJoining??master.dateOfJoining??'').slice(0,10),employeeId:old.employeeId||master.employeeId||null};
   }
   // Preserve profiles not included by a filtered UI view.
   for(const old of DB.employeeProfiles||[]){ if(!seen.has(old.employee)) normalized.push(old); }

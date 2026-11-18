@@ -1,3 +1,11 @@
+## V95 — Former Employee Status Persistence Fix
+
+- Employee disable/reactivation is persisted through the dedicated status endpoint and remains authoritative across refreshes, logouts, and server restarts.
+- Salary/profile and leave-entitlement edits can no longer reactivate an inactive employee as a side effect; only the explicit Re-activate action changes the status back to active.
+- Startup normalization reconciles employee profile and employee detail status, retaining the original inactive date and preserving former-employee history.
+- If the database write fails, the in-memory employee status is rolled back and the API reports that the change was not committed.
+- Existing salary records, loans, employee details, and other application data are preserved. No database reset or destructive migration is included.
+
 ## V94 — CEO Combo Chart & Special Allowance Restore
 
 - CEO Revenue & Patient Trend now uses blue revenue bars with a yellow patient-count line, separate left/right scales, and hover values for each series.
